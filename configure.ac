@@ -1,0 +1,60 @@
+dnl
+dnl This file is part of Sylverant PSO Server.
+dnl
+dnl Copyright (C) 2009 Lawrence Sebald
+dnl
+dnl This program is free software: you can redistribute it and/or modify
+dnl it under the terms of the GNU General Public License version 3 as
+dnl published by the Free Software Foundation.
+dnl
+dnl This program is distributed in the hope that it will be useful,
+dnl but WITHOUT ANY WARRANTY; without even the implied warranty of
+dnl MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+dnl GNU General Public License for more details.
+dnl
+dnl You should have received a copy of the GNU General Public License
+dnl along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+AC_PREREQ([2.63])
+AC_INIT([shipgate], [0.1.0])
+
+AC_CANONICAL_HOST
+AC_CANONICAL_TARGET
+
+AM_INIT_AUTOMAKE([shipgate], [0.1.0])
+AC_PROG_INSTALL
+AC_PROG_LIBTOOL
+
+AC_LANG(C)
+
+AC_CONFIG_SRCDIR([src/packets.c])
+
+# Checks for programs.
+AC_PROG_CC
+
+# Checks for libraries.
+MYSQL_CLIENT()
+AC_CHECK_LIB([expat], [XML_ParserCreate], , AC_MSG_ERROR([libexpat is required!]))
+AC_CHECK_LIB([crypto], [RC4], , AC_MSG_ERROR([libcrypto is required!]))
+AC_CHECK_LIB([sylverant], [sylverant_read_config], , AC_MSG_ERROR([libsylverant is required!]))
+
+MYSQL_LIBS="`mysql_config --libs`"
+AC_SUBST(MYSQL_LIBS)
+
+# Checks for header files.
+AC_CHECK_HEADERS([arpa/inet.h inttypes.h netinet/in.h stdlib.h string.h sys/socket.h unistd.h])
+
+# Checks for typedefs, structures, and compiler characteristics.
+AC_TYPE_SSIZE_T
+AC_TYPE_UINT16_T
+AC_TYPE_UINT32_T
+AC_TYPE_UINT8_T
+
+# Checks for library functions.
+AC_FUNC_MALLOC
+AC_FUNC_REALLOC
+AC_CHECK_FUNCS([inet_ntoa memmove memset select socket])
+
+AC_CONFIG_FILES([Makefile])
+
+AC_OUTPUT
