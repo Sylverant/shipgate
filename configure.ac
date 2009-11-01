@@ -15,8 +15,9 @@ dnl
 dnl You should have received a copy of the GNU General Public License
 dnl along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-AC_PREREQ([2.63])
+AC_PREREQ([2.62])
 AC_INIT([shipgate], [0.1.0])
+AC_CONFIG_MACRO_DIR([m4])
 
 AC_CANONICAL_HOST
 AC_CANONICAL_TARGET
