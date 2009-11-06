@@ -67,13 +67,13 @@ typedef struct shipgate_cnt {
     uint32_t padding;
 } PACKED shipgate_cnt_pkt;
 
-/* A forwarded Dreamcast packet. */
-typedef struct shipgate_fw_dc {
+/* A forwarded player packet. */
+typedef struct shipgate_fw {
     shipgate_hdr_t hdr;
     uint32_t ship_id;
     uint32_t reserved;
     dc_pkt_hdr_t pkt;
-} PACKED shipgate_fw_dc_pkt;
+} PACKED shipgate_fw_pkt;
 
 /* A packet telling clients that a ship has started or dropped. */
 typedef struct shipgate_ship_status {

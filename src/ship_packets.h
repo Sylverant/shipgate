@@ -91,6 +91,16 @@ typedef struct dc_simple_mail {
     char stuff[0x200];
 } PACKED dc_simple_mail_pkt;
 
+/* The packet sent to send/deliver simple mail (PC). */
+typedef struct pc_simple_mail {
+    dc_pkt_hdr_t hdr;
+    uint32_t tag;
+    uint32_t gc_sender;
+    uint16_t name[16];
+    uint32_t gc_dest;
+    char stuff[0x400];
+} PACKED pc_simple_mail_pkt;
+
 #undef PACKED
 
 #define SHIP_GUILD_SEARCH_TYPE              0x0040

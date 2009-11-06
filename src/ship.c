@@ -240,7 +240,7 @@ static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
 }
 
 /* Handle a ship's forwarded Dreamcast packet. */
-static int handle_dreamcast(ship_t *c, shipgate_fw_dc_pkt *pkt) {
+static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
     uint8_t type = pkt->pkt.pkt_type;
     ship_t *i;
     uint32_t tmp;
@@ -275,6 +275,28 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_dc_pkt *pkt) {
     return -2;
 }
 
+/* Handle a ship's forwarded PC packet. */
+static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
+    uint8_t type = pkt->pkt.pkt_type;
+    ship_t *i;
+
+    debug(DBG_LOG, "PC: Received %02X\n", type);
+
+    switch(type) {
+        case SHIP_SIMPLE_MAIL_TYPE:
+            /* Forward these to all ships other than the sender. */
+            TAILQ_FOREACH(i, &ships, qentry) {
+                if(i != c) {
+                    forward_pc(i, &pkt->pkt, c->ship_id);
+                }
+            }
+
+            return 0;
+    }
+
+    return -2;
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -295,7 +317,10 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_count(c, (shipgate_cnt_pkt *)pkt);
 
         case SHDR_TYPE_DC:
-            return handle_dreamcast(c, (shipgate_fw_dc_pkt *)pkt);
+            return handle_dreamcast(c, (shipgate_fw_pkt *)pkt);
+
+        case SHDR_TYPE_PC:
+            return handle_pc(c, (shipgate_fw_pkt *)pkt);
 
         case SHDR_TYPE_PING:
             /* If this is a ping request, reply. Otherwise, ignore it, the work

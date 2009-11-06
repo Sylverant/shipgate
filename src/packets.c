@@ -89,9 +89,9 @@ static int send_crypt(ship_t *c, int len) {
 }
 
 int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender) {
-    shipgate_fw_dc_pkt *pkt = (shipgate_fw_dc_pkt *)sendbuf;
+    shipgate_fw_pkt *pkt = (shipgate_fw_pkt *)sendbuf;
     int dc_len = LE16(dc->pkt_len);
-    int full_len = sizeof(shipgate_fw_dc_pkt) + dc_len;
+    int full_len = sizeof(shipgate_fw_pkt) + dc_len;
 
     /* Round up the packet size, if needed. */
     if(full_len & 0x07)
@@ -111,6 +111,34 @@ int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender) {
 
     /* Copy in the packet, unchanged */
     memcpy(&pkt->pkt, dc, dc_len);
+
+    /* Send the packet away */
+    return send_crypt(c, full_len);
+}
+
+int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender) {
+    shipgate_fw_pkt *pkt = (shipgate_fw_pkt *)sendbuf;
+    int pc_len = LE16(pc->pkt_len);
+    int full_len = sizeof(shipgate_fw_pkt) + pc_len;
+
+    /* Round up the packet size, if needed. */
+    if(full_len & 0x07)
+        full_len = (full_len + 8) & 0xFFF8;
+
+    /* Scrub the buffer */
+    memset(pkt, 0, full_len);
+
+    /* Fill in the shipgate header */
+    pkt->hdr.pkt_len = htons(full_len);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_PC);
+    pkt->hdr.pkt_unc_len = htons(full_len);
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    /* Add the metadata */
+    pkt->ship_id = htonl(sender);
+
+    /* Copy in the packet, unchanged */
+    memcpy(&pkt->pkt, pc, pc_len);
 
     /* Send the packet away */
     return send_crypt(c, full_len);
