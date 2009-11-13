@@ -218,3 +218,23 @@ int send_ping(ship_t *c, int reply) {
     /* Send it away. */
     return send_raw(c, sizeof(shipgate_hdr_t));
 }
+
+/* Send the ship a character data restore. */
+int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata) {
+    shipgate_char_data_pkt *pkt = (shipgate_char_data_pkt *)sendbuf;
+
+    /* Fill in the header. */
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_char_data_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_CDATA);
+    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_char_data_pkt));
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    /* Fill in the body. */
+    pkt->guildcard = htonl(gc);
+    pkt->slot = htonl(slot);
+    pkt->padding = 0;
+    memcpy(pkt->data, cdata, 1052); 
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_char_data_pkt));
+}

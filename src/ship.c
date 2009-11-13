@@ -297,6 +297,84 @@ static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
     return -2;
 }
 
+/* Handle a ship's save character data packet. */
+static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
+    uint32_t gc, slot;
+    char query[4096];
+
+    gc = ntohl(pkt->guildcard);
+    slot = ntohl(pkt->slot);
+
+    /* Delete any character data already exising in that slot. */
+    sprintf(query, "DELETE FROM character_data WHERE guildcard='%u' AND "
+            "slot='%u'", gc, slot);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't remove old character data (%u: %u)\n",
+              gc, slot);
+        /* XXXX: Should send some sort of failure message. */
+        return 0;
+    }
+
+    /* Build up the store query for it. */
+    sprintf(query, "INSERT INTO character_data(guildcard, slot, data) VALUES "
+            "('%u', '%u', '", gc, slot);
+    sylverant_db_escape_str(&conn, query + strlen(query), (char *)pkt->data,
+                            1052);
+    strcat(query, "')");
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't save character data (%u: %u)\n", gc, slot);
+        /* XXXX: Should send some sort of failure message. */
+        return 0;
+    }
+
+    return 0;
+}
+
+/* Handle a ship's character data request packet. */
+static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
+    uint32_t gc, slot;
+    char query[256];
+    uint8_t data[1052];
+    void *result;
+    char **row;
+
+    gc = ntohl(pkt->guildcard);
+    slot = ntohl(pkt->slot);
+
+    /* Build the query asking for the data. */
+    sprintf(query, "SELECT data FROM character_data WHERE guildcard='%u' AND "
+            "slot='%u'", gc, slot);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch character data (%u: %u)\n", gc, slot);
+        /* XXXX: Should send some sort of failure message. */
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch character data (%u: %u)\n", gc, slot);
+        /* XXXX: Should send some sort of failure message. */
+        return 0;
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "No saved character data (%u: %u)\n", gc, slot);
+        /* XXXX: Should send some sort of failure message. */
+        return 0;
+    }
+
+    /* Grab the data from the result */
+    memcpy(data, row[0], 1052);
+    sylverant_db_result_free(result);
+
+    /* Send the data back to the ship. */
+    return send_cdata(c, gc, slot, data);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -330,6 +408,12 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             }
 
             return 0;
+
+        case SHDR_TYPE_CDATA:
+            return handle_cdata(c, (shipgate_char_data_pkt *)pkt);
+
+        case SHDR_TYPE_CREQ:
+            return handle_creq(c, (shipgate_char_req_pkt *)pkt);
 
         default:
             return -3;
