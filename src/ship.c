@@ -28,6 +28,7 @@
 #include <sylverant/database.h>
 #include <sylverant/sha4.h>
 #include <sylverant/mtwist.h>
+#include <sylverant/md5.h>
 
 #include "ship.h"
 #include "shipgate.h"
@@ -375,6 +376,93 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     return send_cdata(c, gc, slot, data);
 }
 
+/* Handle a GM login request coming from a ship. */
+static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
+    uint32_t gc, block;
+    char query[256];
+    uint8_t data[1024];
+    void *result;
+    char **row;
+    int account_id;
+    int i;
+    unsigned char hash[16];
+
+    gc = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+
+    /* Build the query asking for the data. */
+    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%u'",
+            gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "No account data (%u)\n", gc);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    /* Grab the data from the result */
+    account_id = atoi(row[0]);
+    sylverant_db_result_free(result);
+
+    /* Now, attempt to fetch the gm status of the account. */
+    sprintf(query, "SELECT password, regtime FROM account_data WHERE "
+            "account_id='%d' AND username='%s' AND isgm>'0'", account_id,
+            pkt->username);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't lookup account data (%d)\n", account_id);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%d)\n", account_id);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_LOG, "Failed GM login - not gm (%d)\n", account_id);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    /* Check the password. */
+    sprintf(query, "%s_%s_salt", pkt->password, row[1]);
+    md5(query, strlen(query), hash);
+
+    query[0] = '\0';
+    for(i = 0; i < 16; ++i) {
+        sprintf(query, "%s%02x", query, hash[i]);
+    }
+
+    for(i = 0; i < strlen(row[0]); ++i) {
+        row[0][i] = tolower(row[0][i]);
+    }
+
+    if(strcmp(row[0], query)) {
+        printf("%s\n%s\n\n", row[0], query);
+        debug(DBG_LOG, "Failed GM login - bad password (%d)\n", account_id);
+        return send_gmreply(c, gc, block, 0);
+    }
+
+    /* We're done if we got this far. */
+    sylverant_db_result_free(result);
+
+    /* Send a success message. */
+    return send_gmreply(c, gc, block, 1);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -414,6 +502,9 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_CREQ:
             return handle_creq(c, (shipgate_char_req_pkt *)pkt);
+
+        case SHDR_TYPE_GMLOGIN:
+            return handle_gmlogin(c, (shipgate_gmlogin_req_pkt*)pkt);
 
         default:
             return -3;

@@ -238,3 +238,20 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata) {
     /* Send it away. */
     return send_crypt(c, sizeof(shipgate_char_data_pkt));
 }
+
+/* Send a reply to a GM login request. */
+int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good) {
+    shipgate_gmlogin_reply_pkt *pkt = (shipgate_gmlogin_reply_pkt *)sendbuf;
+    uint16_t flags = good ? SHDR_RESPONSE : SHDR_FAILURE;
+
+    /* Fill in the response. */
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_gmlogin_reply_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_GMLOGIN);
+    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_gmlogin_reply_pkt));
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | flags);
+
+    pkt->guildcard = htonl(gc);
+    pkt->block = htonl(block);
+
+    return send_crypt(c, sizeof(shipgate_gmlogin_reply_pkt));
+}

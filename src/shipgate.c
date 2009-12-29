@@ -140,8 +140,8 @@ void run_server(int sock) {
         FD_ZERO(&writefds);
         FD_ZERO(&exceptfds);
         nfds = 0;
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 5000;
+        timeout.tv_sec = 30;
+        timeout.tv_usec = 0;
         now = time(NULL);
 
         /* Fill the sockets into the fd_set so we can use select below. */
