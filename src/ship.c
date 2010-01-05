@@ -433,7 +433,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
-        debug(DBG_LOG, "Failed GM login - not gm (%d)\n", account_id);
+        debug(DBG_LOG, "Failed GM login - not gm (%s: %d)\n", pkt->username,
+              account_id);
         return send_gmreply(c, gc, block, 0);
     }
 
@@ -451,7 +452,6 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     }
 
     if(strcmp(row[0], query)) {
-        printf("%s\n%s\n\n", row[0], query);
         debug(DBG_LOG, "Failed GM login - bad password (%d)\n", account_id);
         return send_gmreply(c, gc, block, 0);
     }
