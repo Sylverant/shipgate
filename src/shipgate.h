@@ -119,6 +119,16 @@ typedef struct shipgate_gmlogin_reply {
     uint32_t block;
 } PACKED shipgate_gmlogin_reply_pkt;
 
+/* A packet used to set a ban. */
+typedef struct shipgate_ban_req {
+    shipgate_hdr_t hdr;
+    uint32_t req_gc;
+    uint32_t target;
+    uint32_t until;
+    uint32_t reserved;
+    char message[256];
+} PACKED shipgate_ban_req_pkt;
+
 #undef PACKED
 
 /* Size of the shipgate login packet. */
@@ -146,6 +156,8 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_CDATA     0x0014      /* Character data */
 #define SHDR_TYPE_CREQ      0x0015      /* Request saved character data */
 #define SHDR_TYPE_GMLOGIN   0x0016      /* Login request for a Global GM */
+#define SHDR_TYPE_GCBAN     0x0017      /* Guildcard ban */
+#define SHDR_TYPE_IPBAN     0x0018      /* IP ban */
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);

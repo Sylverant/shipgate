@@ -463,6 +463,80 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     return send_gmreply(c, gc, block, 1);
 }
 
+/* Handle a ban request coming from a ship. */
+static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
+    uint32_t req, target, until;
+    char query[1024];
+    void *result;
+    char **row;
+    int account_id;
+    int id;
+
+    req = ntohl(pkt->req_gc);
+    target = ntohl(pkt->target);
+    until = ntohl(pkt->until);
+
+    /* Make sure the requester has permission. */
+    sprintf(query, "SELECT account_id FROM guildcards NATURAL JOIN "
+            "account_data  WHERE guildcard='%u' AND isgm>'0'", req);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch account data (%u)\n", req);
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%u)\n", req);
+        return 0;
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "No account data or not gm (%u)\n", req);
+        return 0;
+    }
+
+    /* We've verified they're legit, continue on. */
+    account_id = atoi(row[0]);
+    sylverant_db_result_free(result);
+
+    /* Build up the ban insert query. */
+    sprintf(query, "INSERT INTO bans(enddate, setby, reason) VALUES "
+            "('%u', '%u', '", until, account_id);
+    sylverant_db_escape_str(&conn, query + strlen(query), (char *)pkt->message,
+                            strlen(pkt->message));
+    strcat(query, "')");
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Could not insert ban into database\n");
+        return 0;
+    }
+
+    /* Now that we have that, add the ban to the right table... */
+    switch(type) {
+        case SHDR_TYPE_GCBAN:
+            sprintf(query, "INSERT INTO guildcard_bans(ban_id, guildcard) "
+                    "VALUES(LAST_INSERT_ID(), '%u')", ntohl(pkt->target));
+            break;
+
+        case SHDR_TYPE_IPBAN:
+            sprintf(query, "INSERT INTO ip_bans(ban_id, addr) VALUES("
+                    "LAST_INSERT_ID(), '%u')", ntohl(pkt->target));
+            break;
+
+        default:
+            return 0;
+    }
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Could not insert ban into database (part 2)\n");
+        return 0;
+    }
+    
+    return 0;
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -504,7 +578,11 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_creq(c, (shipgate_char_req_pkt *)pkt);
 
         case SHDR_TYPE_GMLOGIN:
-            return handle_gmlogin(c, (shipgate_gmlogin_req_pkt*)pkt);
+            return handle_gmlogin(c, (shipgate_gmlogin_req_pkt *)pkt);
+
+        case SHDR_TYPE_GCBAN:
+        case SHDR_TYPE_IPBAN:
+            return handle_ban(c, (shipgate_ban_req_pkt *)pkt, type);
 
         default:
             return -3;
