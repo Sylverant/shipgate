@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009 Lawrence Sebald
+    Copyright (C) 2009, 2010 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License version 3 as
@@ -43,7 +43,7 @@ sylverant_dbconn_t conn;
 /* Print information about this program to stdout. */
 static void print_program_info() {
     printf("Sylverant Shipgate version %s\n", VERSION);
-    printf("Copyright (C) 2009 Lawrence Sebald\n\n");
+    printf("Copyright (C) 2009, 2010 Lawrence Sebald\n\n");
     printf("This program is free software: you can redistribute it and/or\n"
            "modify it under the terms of the GNU General Public License\n"
            "version 3 as published by the Free Software Foundation.\n\n"
@@ -113,9 +113,6 @@ static void load_config() {
         exit(1);
     }
 
-    debug(DBG_LOG, "Setting session wait_timeout...\n");
-    sylverant_db_query(&conn, "SET SESSION wait_timeout='604800'");
-
     debug(DBG_LOG, "Clearing online ships...\n");
     if(sylverant_db_query(&conn, "DELETE FROM online_ships")) {
         debug(DBG_ERROR, "Error clearing online ships\n");
@@ -129,7 +126,7 @@ void run_server(int sock) {
     int asock;
     socklen_t len;
     struct timeval timeout;
-    fd_set readfds, writefds, exceptfds;
+    fd_set readfds, writefds;
     ship_t *i, *tmp;
     ssize_t sent;
     time_t now;
@@ -138,7 +135,6 @@ void run_server(int sock) {
         /* Clear the fd_sets so we can use them. */
         FD_ZERO(&readfds);
         FD_ZERO(&writefds);
-        FD_ZERO(&exceptfds);
         nfds = 0;
         timeout.tv_sec = 30;
         timeout.tv_usec = 0;
@@ -158,7 +154,6 @@ void run_server(int sock) {
             }
 
             FD_SET(i->sock, &readfds);
-            FD_SET(i->sock, &exceptfds);
 
             if(i->sendbuf_cur) {
                 FD_SET(i->sock, &writefds);
@@ -171,7 +166,7 @@ void run_server(int sock) {
         FD_SET(sock, &readfds);
         nfds = nfds > sock ? nfds : sock;
 
-        if(select(nfds + 1, &readfds, &writefds, &exceptfds, &timeout) > 0) {
+        if(select(nfds + 1, &readfds, &writefds, NULL, &timeout) > 0) {
             /* Check the listening port to see if we have a ship. */
             if(FD_ISSET(sock, &readfds)) {
                 len = sizeof(struct sockaddr_in);
@@ -190,14 +185,6 @@ void run_server(int sock) {
 
             /* Check each ship's socket for activity. */
             TAILQ_FOREACH(i, &ships, qentry) {
-                /* Make sure there wasn't some kind of error with this
-                   connection. */
-                if(FD_ISSET(i->sock, &exceptfds)) {
-                    debug(DBG_WARN, "Error with connection!\n");
-                    i->disconnected = 1;
-                    continue;
-                }
-
                 /* Check if this ship was trying to send us anything. */
                 if(FD_ISSET(i->sock, &readfds)) {
                     if(handle_pkt(i)) {
@@ -213,7 +200,7 @@ void run_server(int sock) {
                                     i->sendbuf_cur - i->sendbuf_start, 0);
 
                         /* If we fail to send, and the error isn't EAGAIN,
-                        bail. */
+                           bail. */
                         if(sent == -1) {
                             if(errno != EAGAIN) {
                                 i->disconnected = 1;

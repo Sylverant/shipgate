@@ -46,6 +46,7 @@ typedef struct ship {
 
     int sock;
     int disconnected;
+    uint32_t flags;
 
     in_addr_t conn_addr;
     in_addr_t local_addr;

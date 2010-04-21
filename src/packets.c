@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009 Lawrence Sebald
+    Copyright (C) 2009, 2010 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License version 3 as
@@ -175,7 +175,8 @@ int send_welcome(ship_t *c) {
 
 /* Send a welcome packet to the given ship. */
 int send_ship_status(ship_t *c, char name[], uint32_t sid, uint32_t addr,
-                     uint32_t int_addr, uint16_t port, uint16_t status) {
+                     uint32_t int_addr, uint16_t port, uint16_t status,
+                     uint32_t flags) {
     shipgate_ship_status_pkt *pkt = (shipgate_ship_status_pkt *)sendbuf;
 
     /* Scrub the buffer */
@@ -194,6 +195,7 @@ int send_ship_status(ship_t *c, char name[], uint32_t sid, uint32_t addr,
     pkt->int_addr = int_addr;
     pkt->ship_port = htons(port);
     pkt->status = htons(status);
+    pkt->flags = htonl(flags);
 
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_ship_status_pkt));

@@ -15,14 +15,26 @@ dnl
 dnl You should have received a copy of the GNU General Public License
 dnl along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-AC_PREREQ([2.62])
+AC_PREREQ([2.61])
 AC_INIT([shipgate], [0.1.0])
 AC_CONFIG_MACRO_DIR([m4])
+
+version_major=0
+version_minor=1
+version_micro=0
+
+AC_SUBST([version_major])
+AC_SUBST([version_minor])
+AC_SUBST([version_micro])
+
+AC_DEFINE_UNQUOTED([VERSION_MAJOR], [$version_major], [Major Package Version])
+AC_DEFINE_UNQUOTED([VERSION_MINOR], [$version_minor], [Minor Package Version])
+AC_DEFINE_UNQUOTED([VERSION_MICRO], [$version_micro], [Micro Package Version])
 
 AC_CANONICAL_HOST
 AC_CANONICAL_TARGET
 
-AM_INIT_AUTOMAKE([shipgate], [0.1.0])
+AM_INIT_AUTOMAKE
 AC_PROG_INSTALL
 AC_PROG_LIBTOOL
 
@@ -56,6 +68,8 @@ AC_C_BIGENDIAN
 AC_FUNC_MALLOC
 AC_FUNC_REALLOC
 AC_CHECK_FUNCS([inet_ntoa memmove memset select socket])
+
+ADD_CFLAGS([-Wall])
 
 AC_CONFIG_FILES([Makefile])
 

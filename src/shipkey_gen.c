@@ -45,7 +45,6 @@ int main(int argc, char *argv[]) {
     char query[1024], data[512];
     FILE *fp, *r;
     unsigned char key[128];
-    int i;
     uint32_t index;
 
     /* Generate the random data used to create our key. */

@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009 Lawrence Sebald
+    Copyright (C) 2009, 2010 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License version 3 as
@@ -20,6 +20,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <ctype.h>
 #include <sys/socket.h>
 
 #include <openssl/rc4.h>
@@ -67,7 +68,7 @@ ship_t *create_connection(int sock, in_addr_t addr) {
     /* Store basic parameters in the client structure. */
     rv->sock = sock;
     rv->conn_addr = addr;
-    rv->ship_id = (i << 24) | 0x00FFFFFF;
+    rv->ship_id = i + 1;
     rv->last_message = time(NULL);
 
     for(i = 0; i < 4; ++i) {
@@ -82,7 +83,7 @@ ship_t *create_connection(int sock, in_addr_t addr) {
         return NULL;
     }
 
-    ship_list[i] = rv;
+    ship_list[rv->ship_id - 1] = rv;
 
     /* Insert it at the end of our list, and we're done. */
     TAILQ_INSERT_TAIL(&ships, rv, qentry);
@@ -101,7 +102,7 @@ void destroy_connection(ship_t *c) {
     /* Send a status packet to everyone */
     TAILQ_FOREACH(i, &ships, qentry) {
         send_ship_status(i, c->name, c->ship_id, c->remote_addr, c->local_addr,
-                         c->port, 0);
+                         c->port, 0, 0);
     }
     
     /* Clear the online flag for anyone that's online on that ship. */
@@ -122,7 +123,7 @@ void destroy_connection(ship_t *c) {
     }
 
     /* Clear it out from the list of in-use ship IDs. */
-    ship_list[c->ship_id >> 24] = NULL;
+    ship_list[c->ship_id - 1] = NULL;
 
     /* Clean up the ship's structure. */
     if(c->sock >= 0) {
@@ -196,29 +197,31 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     c->port = ntohs(pkt->ship_port);
     c->key_idx = ntohs(pkt->ship_key);
     c->connections = ntohl(pkt->connections);
+    c->flags = ntohl(pkt->flags);
     strcpy(c->name, pkt->name);
 
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
-            "ship_id) VALUES ('%s', '%d', '%u', '%hu', '%u', '%u')",
-            c->name, c->connections,  ntohl(c->remote_addr), c->port,
-            ntohl(c->local_addr), c->ship_id);
+            "ship_id, gm_only) VALUES ('%s', '%d', '%u', '%hu', '%u', '%u', "
+            "'%d')", c->name, c->connections,  ntohl(c->remote_addr), c->port,
+            ntohl(c->local_addr), c->ship_id, !!(c->flags & LOGIN_FLAG_GMONLY));
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
               c->name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
         return -1;
     }
 
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
         send_ship_status(j, c->name, c->ship_id, c->remote_addr, c->local_addr,
-                         c->port, 1);
+                         c->port, 1, c->flags);
 
         /* Send this ship to the new ship, as long as that wasn't done just
            above here. */
         if(j != c) {
             send_ship_status(c, j->name, j->ship_id, j->remote_addr,
-                             j->local_addr, j->port, 1);
+                             j->local_addr, j->port, 1, c->flags);
         }
     }
 
@@ -253,7 +256,7 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
         case SHIP_SIMPLE_MAIL_TYPE:
             /* Forward these to all ships other than the sender. */
             TAILQ_FOREACH(i, &ships, qentry) {
-                if(i != c) {
+                if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
                     forward_dreamcast(i, &pkt->pkt, c->ship_id);
                 }
             }
@@ -287,7 +290,7 @@ static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
         case SHIP_SIMPLE_MAIL_TYPE:
             /* Forward these to all ships other than the sender. */
             TAILQ_FOREACH(i, &ships, qentry) {
-                if(i != c) {
+                if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
                     forward_pc(i, &pkt->pkt, c->ship_id);
                 }
             }
@@ -380,7 +383,6 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
 static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     uint32_t gc, block;
     char query[256];
-    uint8_t data[1024];
     void *result;
     char **row;
     int account_id;
@@ -440,7 +442,7 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     /* Check the password. */
     sprintf(query, "%s_%s_salt", pkt->password, row[1]);
-    md5(query, strlen(query), hash);
+    md5((unsigned char *)query, strlen(query), hash);
 
     query[0] = '\0';
     for(i = 0; i < 16; ++i) {
@@ -470,7 +472,6 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
     void *result;
     char **row;
     int account_id;
-    int id;
 
     req = ntohl(pkt->req_gc);
     target = ntohl(pkt->target);
@@ -616,11 +617,10 @@ int handle_pkt(ship_t *c) {
 
     sz += c->recvbuf_cur;
     c->recvbuf_cur = 0;
+    rbp = recvbuf;
 
     /* As long as what we have is long enough, decrypt it. */
     if(sz >= 8) {
-        rbp = recvbuf;
-
         while(sz >= 8 && rv == 0) {
             /* Grab the packet header so we know what exactly we're looking
                for, in terms of packet length. */
@@ -655,7 +655,7 @@ int handle_pkt(ship_t *c) {
             }
             else {
                 /* Nope, we're missing part, break out of the loop, and buffer
-                the remaining data. */
+                   the remaining data. */
                 break;
             }
         }
