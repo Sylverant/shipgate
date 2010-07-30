@@ -28,6 +28,7 @@
 
 #include <sylverant/config.h>
 #include <sylverant/debug.h>
+#include <sylverant/database.h>
 
 #include "shipgate.h"
 #include "ship.h"

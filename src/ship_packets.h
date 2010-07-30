@@ -21,7 +21,6 @@
 #include <inttypes.h>
 #include <netinet/in.h>
 
-#include <sylverant/characters.h>
 #include <sylverant/encryption.h>
 
 #if defined(WORDS_BIGENDIAN) || defined(__BIG_ENDIAN__)
