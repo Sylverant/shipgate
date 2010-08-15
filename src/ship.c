@@ -191,6 +191,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     /* Hash the key with SHA-512, and use that as our final key. */
     sha4(key, 128, hash, 0);
     RC4_set_key(&c->ship_key, 64, hash);
+    c->key_set = 1;
 
     c->remote_addr = pkt->ship_addr;
     c->local_addr = pkt->int_addr;
@@ -547,7 +548,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
     switch(type) {
         case SHDR_TYPE_LOGIN:
-            if(!(flags & SHDR_RESPONSE) || !(flags & SHDR_NO_ENCRYPT)) {
+            if(!(flags & SHDR_RESPONSE)) {
                 debug(DBG_WARN, "Client sent invalid login response\n");
                 return -1;
             }
@@ -624,8 +625,15 @@ int handle_pkt(ship_t *c) {
         while(sz >= 8 && rv == 0) {
             /* Grab the packet header so we know what exactly we're looking
                for, in terms of packet length. */
-            if(!c->pkt.pkt_type) {
-                memcpy(&c->pkt, rbp, 8);
+            if(!c->hdr_read) {
+                if(c->key_set) {
+                    RC4(&c->ship_key, 8, rbp, (unsigned char *)&c->pkt);
+                }
+                else {
+                    memcpy(&c->pkt, rbp, 8);
+                }
+
+                c->hdr_read = 1;
             }
 
             pkt_sz = htons(c->pkt.pkt_len);
@@ -638,7 +646,7 @@ int handle_pkt(ship_t *c) {
             /* Do we have the whole packet? */
             if(sz >= (ssize_t)pkt_sz) {
                 /* Yes, we do, decrypt it. */
-                if(!(c->pkt.flags & SHDR_NO_ENCRYPT)) {
+                if(c->key_set) {
                     RC4(&c->ship_key, pkt_sz - 8, rbp + 8, rbp + 8);
                 }
 
@@ -651,7 +659,7 @@ int handle_pkt(ship_t *c) {
                 rbp += pkt_sz;
                 sz -= pkt_sz;
 
-                c->pkt.pkt_type = c->pkt.pkt_len = 0;
+                c->hdr_read = 0;
             }
             else {
                 /* Nope, we're missing part, break out of the loop, and buffer

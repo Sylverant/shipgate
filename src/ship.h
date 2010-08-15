@@ -63,11 +63,13 @@ typedef struct ship {
 
     RC4_KEY ship_key;
     RC4_KEY gate_key;
+    int key_set;
 
     unsigned char *recvbuf;
     int recvbuf_cur;
     int recvbuf_size;
     shipgate_hdr_t pkt;
+    int hdr_read;
 
     unsigned char *sendbuf;
     int sendbuf_cur;

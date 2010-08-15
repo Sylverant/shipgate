@@ -80,11 +80,13 @@ static int send_raw(ship_t *c, int len) {
 
 /* Encrypt a packet, and send it away. */
 static int send_crypt(ship_t *c, int len) {
-    /* Make sure its more than just a header, and encrypt the body. */
-    if(len > 8) {
-        RC4(&c->gate_key, len - 8, sendbuf + 8, sendbuf + 8);
+    /* Make sure its at least a header in length. */
+    if(len < 8) {
+        return -1;
     }
-    
+
+    RC4(&c->gate_key, len, sendbuf, sendbuf);
+
     return send_raw(c, len);
 }
 
@@ -155,7 +157,7 @@ int send_welcome(ship_t *c) {
     pkt->hdr.pkt_len = htons(SHIPGATE_LOGIN_SIZE);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_LOGIN);
     pkt->hdr.pkt_unc_len = htons(SHIPGATE_LOGIN_SIZE);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | SHDR_NO_ENCRYPT);
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
 
     /* Fill in the required message */
     strcpy(pkt->msg, shipgate_login_msg);
@@ -211,14 +213,14 @@ int send_ping(ship_t *c, int reply) {
     pkt->pkt_unc_len = htons(sizeof(shipgate_hdr_t));
 
     if(reply) {
-        pkt->flags = htons(SHDR_NO_DEFLATE | SHDR_NO_ENCRYPT | SHDR_RESPONSE);
+        pkt->flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
     }
     else {
-        pkt->flags = htons(SHDR_NO_DEFLATE | SHDR_NO_ENCRYPT);
+        pkt->flags = htons(SHDR_NO_DEFLATE);
     }
 
     /* Send it away. */
-    return send_raw(c, sizeof(shipgate_hdr_t));
+    return send_crypt(c, sizeof(shipgate_hdr_t));
 }
 
 /* Send the ship a character data restore. */
