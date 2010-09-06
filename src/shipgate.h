@@ -110,6 +110,8 @@ typedef struct shipgate_gmlogin_reply {
     shipgate_hdr_t hdr;
     uint32_t guildcard;
     uint32_t block;
+    uint8_t priv;
+    uint8_t reserved[7];
 } PACKED shipgate_gmlogin_reply_pkt;
 
 /* A packet used to set a ban. */
@@ -177,6 +179,6 @@ int send_ping(ship_t *c, int reply);
 int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata);
 
 /* Send a reply to a GM login request. */
-int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good);
+int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p);
 
 #endif /* !SHIPGATE_H */

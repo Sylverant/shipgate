@@ -34,6 +34,11 @@
 #include "ship.h"
 #include "shipgate.h"
 
+#define CLIENT_PRIV_LOCAL_GM    0x00000001
+#define CLIENT_PRIV_GLOBAL_GM   0x00000002
+#define CLIENT_PRIV_LOCAL_ROOT  0x00000004
+#define CLIENT_PRIV_GLOBAL_ROOT 0x00000008
+
 /* Database connection */
 extern sylverant_dbconn_t conn;
 
@@ -389,6 +394,7 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     int account_id;
     int i;
     unsigned char hash[16];
+    uint8_t priv;
 
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
@@ -399,19 +405,19 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
-        return send_gmreply(c, gc, block, 0);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
-        return send_gmreply(c, gc, block, 0);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
         debug(DBG_WARN, "No account data (%u)\n", gc);
-        return send_gmreply(c, gc, block, 0);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     /* Grab the data from the result */
@@ -419,26 +425,26 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     sylverant_db_result_free(result);
 
     /* Now, attempt to fetch the gm status of the account. */
-    sprintf(query, "SELECT password, regtime FROM account_data WHERE "
-            "account_id='%d' AND username='%s' AND isgm>'0'", account_id,
+    sprintf(query, "SELECT password, regtime, privlevel FROM account_data WHERE"
+            " account_id='%d' AND username='%s' AND privlevel>'0'", account_id,
             pkt->username);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't lookup account data (%d)\n", account_id);
-        return send_gmreply(c, gc, block, 0);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch account data (%d)\n", account_id);
-        return send_gmreply(c, gc, block, 0);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
         debug(DBG_LOG, "Failed GM login - not gm (%s: %d)\n", pkt->username,
               account_id);
-        return send_gmreply(c, gc, block, 0);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     /* Check the password. */
@@ -456,14 +462,30 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if(strcmp(row[0], query)) {
         debug(DBG_LOG, "Failed GM login - bad password (%d)\n", account_id);
-        return send_gmreply(c, gc, block, 0);
+        sylverant_db_result_free(result);
+        return send_gmreply(c, gc, block, 0, 0);
+    }
+
+    /* Grab the privilege level out of the packet */
+    priv = (uint8_t)atoi(row[2]);
+
+    /* Filter out any privileges that don't make sense. Can't have global GM
+       without local GM support. Also, anyone set as a root this way must have
+       BOTH root bits set, not just one! */
+    if(((priv & CLIENT_PRIV_GLOBAL_GM) && !(priv & CLIENT_PRIV_LOCAL_GM)) ||
+       ((priv & CLIENT_PRIV_GLOBAL_ROOT) && !(priv & CLIENT_PRIV_LOCAL_ROOT)) ||
+       ((priv & CLIENT_PRIV_LOCAL_ROOT) && !(priv & CLIENT_PRIV_GLOBAL_ROOT))) {
+        debug(DBG_WARN, "Invalid privileges on account %d: %02x\n", account_id,
+              priv);
+        sylverant_db_result_free(result);
+        return send_gmreply(c, gc, block, 0, 0);
     }
 
     /* We're done if we got this far. */
     sylverant_db_result_free(result);
 
     /* Send a success message. */
-    return send_gmreply(c, gc, block, 1);
+    return send_gmreply(c, gc, block, 1, priv);
 }
 
 /* Handle a ban request coming from a ship. */

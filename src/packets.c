@@ -244,9 +244,12 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata) {
 }
 
 /* Send a reply to a GM login request. */
-int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good) {
+int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p) {
     shipgate_gmlogin_reply_pkt *pkt = (shipgate_gmlogin_reply_pkt *)sendbuf;
     uint16_t flags = good ? SHDR_RESPONSE : SHDR_FAILURE;
+
+    /* Clear the packet first */
+    memset(pkt, 0, sizeof(shipgate_gmlogin_reply_pkt));
 
     /* Fill in the response. */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_gmlogin_reply_pkt));
@@ -256,6 +259,7 @@ int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good) {
 
     pkt->guildcard = htonl(gc);
     pkt->block = htonl(block);
+    pkt->priv = p;
 
     return send_crypt(c, sizeof(shipgate_gmlogin_reply_pkt));
 }
