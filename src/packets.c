@@ -190,7 +190,7 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
 
     /* Fill in the info */
     strcpy(pkt->name, o->name);
-    pkt->ship_id = htonl(o->ship_id);
+    pkt->ship_id = htonl(o->key_idx);
     pkt->ship_addr = o->remote_addr;
     pkt->int_addr = o->local_addr;
     pkt->ship_port = htons(o->port);

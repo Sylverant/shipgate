@@ -53,7 +53,6 @@ typedef struct ship {
     in_addr_t local_addr;
     in_addr_t remote_addr;
 
-    uint32_t ship_id;
     uint16_t port;
     uint16_t key_idx;
     uint16_t clients;

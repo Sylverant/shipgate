@@ -43,23 +43,11 @@
 extern sylverant_dbconn_t conn;
 
 static uint8_t recvbuf[65536];
-static ship_t *ship_list[256] = { NULL };
 
 /* Create a new connection, storing it in the list of ships. */
 ship_t *create_connection(int sock, in_addr_t addr) {
     ship_t *rv;
     uint32_t i;
-
-    /* Search for an open ship ID for this ship. */
-    for(i = 0; i < 256; ++i) {
-        if(ship_list[i] == NULL)
-            break;
-    }
-
-    if(i == 256) {
-        debug(DBG_ERROR, "Out of ship IDs\n");
-        return NULL;
-    }
 
     rv = (ship_t *)malloc(sizeof(ship_t));
 
@@ -73,7 +61,6 @@ ship_t *create_connection(int sock, in_addr_t addr) {
     /* Store basic parameters in the client structure. */
     rv->sock = sock;
     rv->conn_addr = addr;
-    rv->ship_id = i + 1;
     rv->last_message = time(NULL);
 
     for(i = 0; i < 4; ++i) {
@@ -87,8 +74,6 @@ ship_t *create_connection(int sock, in_addr_t addr) {
         free(rv);
         return NULL;
     }
-
-    ship_list[rv->ship_id - 1] = rv;
 
     /* Insert it at the end of our list, and we're done. */
     TAILQ_INSERT_TAIL(&ships, rv, qentry);
@@ -104,21 +89,21 @@ void destroy_connection(ship_t *c) {
 
     TAILQ_REMOVE(&ships, c, qentry);
 
-    /* Send a status packet to everyone */
-    TAILQ_FOREACH(i, &ships, qentry) {
-        send_ship_status(i, c, 0);
+    if(c->key_idx) {
+        /* Send a status packet to everyone telling them its gone away */
+        TAILQ_FOREACH(i, &ships, qentry) {
+            send_ship_status(i, c, 0);
+        }
+
+        /* Remove the ship from the online_ships table. */
+        sprintf(query, "DELETE FROM online_ships WHERE ship_id='%hu'",
+                c->key_idx);
+
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_ERROR, "Couldn't clear %s from the online_ships table\n",
+                  c->name);
+        }
     }
-
-    /* Remove the ship from the online_ships table. */
-    sprintf(query, "DELETE FROM online_ships WHERE name='%s'", c->name);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_ERROR, "Couldn't clear %s from the online_ships table\n",
-              c->name);
-    }
-
-    /* Clear it out from the list of in-use ship IDs. */
-    ship_list[c->ship_id - 1] = NULL;
 
     /* Clean up the ship's structure. */
     if(c->sock >= 0) {
@@ -201,7 +186,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
             "ship_id, gm_only, games, menu_code) VALUES ('%s', '%hu', '%u', "
             "'%hu', '%u', '%u', '%d', '%hu', '%hu')", c->name, c->clients,
-            ntohl(c->remote_addr), c->port, ntohl(c->local_addr), c->ship_id,
+            ntohl(c->remote_addr), c->port, ntohl(c->local_addr), c->key_idx,
             !!(c->flags & LOGIN_FLAG_GMONLY), c->games, c->menu_code);
 
     if(sylverant_db_query(&conn, query)) {
@@ -234,14 +219,14 @@ static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
     c->games = ntohs(pkt->games);
 
     sprintf(query, "UPDATE online_ships SET players='%hu', games='%hu' WHERE "
-            "ship_id='%u'", c->clients, c->games, c->ship_id);
+            "ship_id='%u'", c->clients, c->games, c->key_idx);
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't update ship %s player/game count", c->name);
     }
 
     /* Update all of the ships */
     TAILQ_FOREACH(j, &ships, qentry) {
-        send_counts(j, c->ship_id, c->clients, c->games);
+        send_counts(j, c->key_idx, c->clients, c->games);
     }
 
     return 0;
@@ -261,7 +246,7 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
             /* Forward these to all ships other than the sender. */
             TAILQ_FOREACH(i, &ships, qentry) {
                 if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
-                    forward_dreamcast(i, &pkt->pkt, c->ship_id);
+                    forward_dreamcast(i, &pkt->pkt, c->key_idx);
                 }
             }
 
@@ -272,8 +257,8 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
             tmp = ntohl(pkt->ship_id);
 
             TAILQ_FOREACH(i, &ships, qentry) {
-                if(i->ship_id == tmp) {
-                    return forward_dreamcast(i, &pkt->pkt, c->ship_id);
+                if(i->key_idx == tmp) {
+                    return forward_dreamcast(i, &pkt->pkt, c->key_idx);
                 }
             }
 
@@ -295,7 +280,7 @@ static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
             /* Forward these to all ships other than the sender. */
             TAILQ_FOREACH(i, &ships, qentry) {
                 if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
-                    forward_pc(i, &pkt->pkt, c->ship_id);
+                    forward_pc(i, &pkt->pkt, c->key_idx);
                 }
             }
 
