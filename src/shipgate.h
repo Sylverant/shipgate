@@ -48,16 +48,19 @@ typedef struct shipgate_login_reply {
     uint32_t int_addr;
     uint16_t ship_port;
     uint16_t ship_key;
-    uint32_t connections;
+    uint16_t clients;
+    uint16_t games;
     uint32_t flags;
+    uint16_t menu_code;
+    uint8_t reserved[6];
 } PACKED shipgate_login_reply_pkt;
 
 /* A update of the client/games count. */
 typedef struct shipgate_cnt {
     shipgate_hdr_t hdr;
-    uint16_t ccnt;
-    uint16_t gcnt;
-    uint32_t padding;
+    uint16_t clients;
+    uint16_t games;
+    uint32_t ship_id;                   /* 0 for ship->gate */
 } PACKED shipgate_cnt_pkt;
 
 /* A forwarded player packet. */
@@ -78,6 +81,10 @@ typedef struct shipgate_ship_status {
     uint16_t ship_port;
     uint16_t status;
     uint32_t flags;
+    uint16_t clients;
+    uint16_t games;
+    uint16_t menu_code;
+    uint16_t reserved;
 } PACKED shipgate_ship_status_pkt;
 
 /* A packet sent to/from clients to save/restore character data. */
@@ -126,16 +133,12 @@ typedef struct shipgate_ban_req {
 
 #undef PACKED
 
-/* Size of the shipgate login packet. */
-#define SHIPGATE_LOGIN_SIZE         64
-
 /* The requisite message for the msg field of the shipgate_login_pkt. */
 static const char shipgate_login_msg[] =
     "Sylverant Shipgate Copyright Lawrence Sebald";
 
 /* Flags for the flags field of shipgate_hdr_t */
 #define SHDR_NO_DEFLATE     0x0001      /* Packet was not deflate()'d */
-#define SHDR_NO_ENCRYPT     0x0002      /* Packet is not encrypted */
 #define SHDR_RESPONSE       0x8000      /* Response to a request */
 #define SHDR_FAILURE        0x4000      /* Failure to complete request */
 
@@ -145,7 +148,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_PC        0x0003      /* A decrypted PCv2 game packet */
 #define SHDR_TYPE_GC        0x0004      /* A decrypted Gamecube game packet */
 #define SHDR_TYPE_LOGIN     0x0010      /* A login request */
-#define SHDR_TYPE_COUNT     0x0011      /* A Client Count update */
+#define SHDR_TYPE_COUNT     0x0011      /* A Client/Game Count update */
 #define SHDR_TYPE_SSTATUS   0x0012      /* A Ship has come up or gone down */
 #define SHDR_TYPE_PING      0x0013      /* A Ping packet, enough said */
 #define SHDR_TYPE_CDATA     0x0014      /* Character data */
@@ -168,9 +171,7 @@ int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *pkt, uint32_t sender);
 int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender);
 
 /* Send a ship up/down message to the given ship. */
-int send_ship_status(ship_t *c, char name[], uint32_t sid, uint32_t addr,
-                     uint32_t int_addr, uint16_t port, uint16_t status,
-                     uint32_t flags);
+int send_ship_status(ship_t *c, ship_t *o, uint16_t status);
 
 /* Send a ping packet to a client. */
 int send_ping(ship_t *c, int reply);
@@ -180,5 +181,8 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata);
 
 /* Send a reply to a GM login request. */
 int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p);
+
+/* Send a client/game update packet. */
+int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games);
 
 #endif /* !SHIPGATE_H */

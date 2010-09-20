@@ -106,17 +106,7 @@ void destroy_connection(ship_t *c) {
 
     /* Send a status packet to everyone */
     TAILQ_FOREACH(i, &ships, qentry) {
-        send_ship_status(i, c->name, c->ship_id, c->remote_addr, c->local_addr,
-                         c->port, 0, 0);
-    }
-    
-    /* Clear the online flag for anyone that's online on that ship. */
-    sprintf(query, "UPDATE account_data SET islogged='0' WHERE "
-            "lastship='%s'", c->name);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_ERROR, "Couldn't clear logged on flags for %s ship!\n",
-              c->name);
+        send_ship_status(i, c, 0);
     }
 
     /* Remove the ship from the online_ships table. */
@@ -202,14 +192,17 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     c->local_addr = pkt->int_addr;
     c->port = ntohs(pkt->ship_port);
     c->key_idx = ntohs(pkt->ship_key);
-    c->connections = ntohl(pkt->connections);
+    c->clients = ntohs(pkt->clients);
+    c->games = ntohs(pkt->games);
     c->flags = ntohl(pkt->flags);
+    c->menu_code = ntohs(pkt->menu_code);
     strcpy(c->name, pkt->name);
 
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
-            "ship_id, gm_only) VALUES ('%s', '%d', '%u', '%hu', '%u', '%u', "
-            "'%d')", c->name, c->connections,  ntohl(c->remote_addr), c->port,
-            ntohl(c->local_addr), c->ship_id, !!(c->flags & LOGIN_FLAG_GMONLY));
+            "ship_id, gm_only, games, menu_code) VALUES ('%s', '%hu', '%u', "
+            "'%hu', '%u', '%u', '%d', '%hu', '%hu')", c->name, c->clients,
+            ntohl(c->remote_addr), c->port, ntohl(c->local_addr), c->ship_id,
+            !!(c->flags & LOGIN_FLAG_GMONLY), c->games, c->menu_code);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
@@ -220,14 +213,12 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
 
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
-        send_ship_status(j, c->name, c->ship_id, c->remote_addr, c->local_addr,
-                         c->port, 1, c->flags);
+        send_ship_status(j, c, 1);
 
         /* Send this ship to the new ship, as long as that wasn't done just
            above here. */
         if(j != c) {
-            send_ship_status(c, j->name, j->ship_id, j->remote_addr,
-                             j->local_addr, j->port, 1, c->flags);
+            send_ship_status(c, j, 1);
         }
     }
 
@@ -237,13 +228,20 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
 /* Handle a ship's update counters packet. */
 static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
     char query[256];
+    ship_t *j;
 
-    c->connections = (uint32_t)ntohs(pkt->ccnt);
+    c->clients = ntohs(pkt->clients);
+    c->games = ntohs(pkt->games);
 
-    sprintf(query, "UPDATE online_ships SET players='%u' WHERE name='%s'",
-            c->connections, c->name);
+    sprintf(query, "UPDATE online_ships SET players='%hu', games='%hu' WHERE "
+            "ship_id='%u'", c->clients, c->games, c->ship_id);
     if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't update ship %s player count", c->name);
+        debug(DBG_WARN, "Couldn't update ship %s player/game count", c->name);
+    }
+
+    /* Update all of the ships */
+    TAILQ_FOREACH(j, &ships, qentry) {
+        send_counts(j, c->ship_id, c->clients, c->games);
     }
 
     return 0;

@@ -47,6 +47,7 @@ typedef struct ship {
     int sock;
     int disconnected;
     uint32_t flags;
+    uint32_t menu;
 
     in_addr_t conn_addr;
     in_addr_t local_addr;
@@ -55,7 +56,9 @@ typedef struct ship {
     uint32_t ship_id;
     uint16_t port;
     uint16_t key_idx;
-    uint32_t connections;
+    uint16_t clients;
+    uint16_t games;
+    uint16_t menu_code;
 
     uint8_t ship_nonce[4];
     uint8_t gate_nonce[4];

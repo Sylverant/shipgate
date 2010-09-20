@@ -154,9 +154,9 @@ int send_welcome(ship_t *c) {
     memset(pkt, 0, sizeof(shipgate_login_pkt));
 
     /* Fill in the header */
-    pkt->hdr.pkt_len = htons(SHIPGATE_LOGIN_SIZE);
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_login_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_LOGIN);
-    pkt->hdr.pkt_unc_len = htons(SHIPGATE_LOGIN_SIZE);
+    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_login_pkt));
     pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
 
     /* Fill in the required message */
@@ -172,13 +172,11 @@ int send_welcome(ship_t *c) {
     memcpy(pkt->gate_nonce, c->gate_nonce, 4);
 
     /* Send the packet away */
-    return send_raw(c, SHIPGATE_LOGIN_SIZE);
+    return send_raw(c, sizeof(shipgate_login_pkt));
 }
 
-/* Send a welcome packet to the given ship. */
-int send_ship_status(ship_t *c, char name[], uint32_t sid, uint32_t addr,
-                     uint32_t int_addr, uint16_t port, uint16_t status,
-                     uint32_t flags) {
+/* Send a ship up/down message to the given ship. */
+int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
     shipgate_ship_status_pkt *pkt = (shipgate_ship_status_pkt *)sendbuf;
 
     /* Scrub the buffer */
@@ -191,13 +189,16 @@ int send_ship_status(ship_t *c, char name[], uint32_t sid, uint32_t addr,
     pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
 
     /* Fill in the info */
-    strcpy(pkt->name, name);
-    pkt->ship_id = htonl(sid);
-    pkt->ship_addr = addr;
-    pkt->int_addr = int_addr;
-    pkt->ship_port = htons(port);
+    strcpy(pkt->name, o->name);
+    pkt->ship_id = htonl(o->ship_id);
+    pkt->ship_addr = o->remote_addr;
+    pkt->int_addr = o->local_addr;
+    pkt->ship_port = htons(o->port);
     pkt->status = htons(status);
-    pkt->flags = htonl(flags);
+    pkt->flags = htonl(o->flags);
+    pkt->clients = htons(o->clients);
+    pkt->games = htons(o->games);
+    pkt->menu_code = htons(o->menu_code);
 
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_ship_status_pkt));
@@ -262,4 +263,24 @@ int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p) {
     pkt->priv = p;
 
     return send_crypt(c, sizeof(shipgate_gmlogin_reply_pkt));
+}
+
+/* Send a client/game update packet. */
+int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games) {
+    shipgate_cnt_pkt *pkt = (shipgate_cnt_pkt *)sendbuf;
+
+    /* Clear the packet first */
+    memset(pkt, 0, sizeof(shipgate_cnt_pkt));
+
+    /* Fill in the response. */
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_cnt_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_COUNT);
+    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_cnt_pkt));
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    pkt->clients = htons(clients);
+    pkt->games = htons(games);
+    pkt->ship_id = htonl(ship_id);
+
+    return send_crypt(c, sizeof(shipgate_cnt_pkt));
 }
