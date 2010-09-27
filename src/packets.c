@@ -231,9 +231,9 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata) {
 
     /* Fill in the header. */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_char_data_pkt));
-    pkt->hdr.pkt_type = htons(SHDR_TYPE_CDATA);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_CREQ);
     pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_char_data_pkt));
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
 
     /* Fill in the body. */
     pkt->guildcard = htonl(gc);
