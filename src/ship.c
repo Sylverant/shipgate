@@ -126,23 +126,55 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     char query[256];
     ship_t *j;
     uint8_t key[128], hash[64];
-    int idx = ntohs(pkt->ship_key), i;
+    int k = ntohs(pkt->ship_key), i;
     void *result;
     char **row;
+    uint32_t pver = c->proto_ver = ntohl(pkt->proto_ver);
+    uint16_t menu_code = ntohs(pkt->menu_code);
+
+    /* Check the protocol version for support */
+    if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
+        debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
+
+        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_PROTO, NULL, 0);
+        return -1;
+    }
 
     /* Attempt to grab the key for this ship. */
-    sprintf(query, "SELECT * FROM ship_data WHERE idx='%u'", idx);
+    sprintf(query, "SELECT rc4key, main_menu FROM ship_data WHERE idx='%u'", k);
 
     if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't find ship key for index %d\n", idx);
+        debug(DBG_WARN, "Couldn't query the database\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, NULL, 0);
         return -1;
     }
 
     if((result = sylverant_db_result_store(&conn)) == NULL ||
        (row = sylverant_db_result_fetch(result)) == NULL) {
-        debug(DBG_WARN, "Invalid index %d\n", idx);
+        debug(DBG_WARN, "Invalid index %d\n", k);
+        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_KEY, NULL, 0);
         return -1;
-    }        
+    }
+
+    /* Check the menu code for validity */
+    if(menu_code && (!isalpha(menu_code & 0xFF) | !isalpha(menu_code >> 8))) {
+        debug(DBG_WARN, "Bad menu code for id: %d\n", k);
+        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_MENU, NULL, 0);
+        return -1;
+    }
+
+    /* If the ship requests the main menu and they aren't allowed there, bail */
+    if(!menu_code && !atoi(row[1])) {
+        debug(DBG_WARN, "Invalid menu code for id: %d\n", k);
+        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_INVAL_MENU, NULL, 0);
+        return -1;
+    }
 
     /* Grab the key from the result */
     memcpy(key, row[0], 128);
@@ -171,16 +203,15 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     /* Hash the key with SHA-512, and use that as our final key. */
     sha4(key, 128, hash, 0);
     RC4_set_key(&c->ship_key, 64, hash);
-    c->key_set = 1;
 
     c->remote_addr = pkt->ship_addr;
     c->local_addr = pkt->int_addr;
     c->port = ntohs(pkt->ship_port);
-    c->key_idx = ntohs(pkt->ship_key);
+    c->key_idx = k;
     c->clients = ntohs(pkt->clients);
     c->games = ntohs(pkt->games);
     c->flags = ntohl(pkt->flags);
-    c->menu_code = ntohs(pkt->menu_code);
+    c->menu_code = menu_code;
     strcpy(c->name, pkt->name);
 
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
@@ -193,6 +224,9 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
         debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
               c->name);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        c->key_set = 0;
+        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, NULL, 0);
         return -1;
     }
 
@@ -207,7 +241,14 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
         }
     }
 
-    return 0;
+    /* Hooray for misusing functions! */
+    if(send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
+        return -1;
+    }
+    else {
+        c->key_set = 1;
+        return 0;
+    }
 }
 
 /* Handle a ship's update counters packet. */
@@ -222,6 +263,7 @@ static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
             "ship_id='%u'", c->clients, c->games, c->key_idx);
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't update ship %s player/game count", c->name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
     }
 
     /* Update all of the ships */
@@ -263,9 +305,13 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
             }
 
             return 0;
-    }
 
-    return -2;
+        default:
+            /* Warn the ship that sent the packet, then drop it */
+            send_error(c, SHDR_TYPE_DC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
+                       (uint8_t *)pkt, ntohs(pkt->hdr.pkt_len));
+            return 0;
+    }
 }
 
 /* Handle a ship's forwarded PC packet. */
@@ -285,9 +331,13 @@ static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
             }
 
             return 0;
-    }
 
-    return -2;
+        default:
+            /* Warn the ship that sent the packet, then drop it */
+            send_error(c, SHDR_TYPE_PC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
+                       (uint8_t *)pkt, ntohs(pkt->hdr.pkt_len));
+            return 0;
+    }
 }
 
 /* Handle a ship's save character data packet. */
@@ -305,7 +355,10 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't remove old character data (%u: %u)\n",
               gc, slot);
-        /* XXXX: Should send some sort of failure message. */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CDATA, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
         return 0;
     }
 
@@ -318,11 +371,16 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't save character data (%u: %u)\n", gc, slot);
-        /* XXXX: Should send some sort of failure message. */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CDATA, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
         return 0;
     }
 
-    return 0;
+    /* Return success (yeah, bad use of this function, but whatever). */
+    return send_error(c, SHDR_TYPE_CDATA, SHDR_RESPONSE, ERR_NO_ERROR,
+                      (uint8_t *)&pkt->guildcard, 8);
 }
 
 /* Handle a ship's character data request packet. */
@@ -342,21 +400,30 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't fetch character data (%u: %u)\n", gc, slot);
-        /* XXXX: Should send some sort of failure message. */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
         return 0;
     }
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch character data (%u: %u)\n", gc, slot);
-        /* XXXX: Should send some sort of failure message. */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
         return 0;
     }
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
         debug(DBG_WARN, "No saved character data (%u: %u)\n", gc, slot);
-        /* XXXX: Should send some sort of failure message. */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_CREQ_NO_DATA, (uint8_t *)&pkt->guildcard, 8);
         return 0;
     }
 
@@ -388,19 +455,27 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
-        return send_gmreply(c, gc, block, 0, 0);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
-        return send_gmreply(c, gc, block, 0, 0);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
     }
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
         debug(DBG_WARN, "No account data (%u)\n", gc);
-        return send_gmreply(c, gc, block, 0, 0);
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
+                          ERR_GMLOGIN_NO_ACC, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the data from the result */
@@ -414,20 +489,28 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't lookup account data (%d)\n", account_id);
-        return send_gmreply(c, gc, block, 0, 0);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch account data (%d)\n", account_id);
-        return send_gmreply(c, gc, block, 0, 0);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
     }
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
         debug(DBG_LOG, "Failed GM login - not gm (%s: %d)\n", pkt->username,
               account_id);
-        return send_gmreply(c, gc, block, 0, 0);
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
+                          ERR_GMLOGIN_NOT_GM, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Check the password. */
@@ -446,7 +529,9 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     if(strcmp(row[0], query)) {
         debug(DBG_LOG, "Failed GM login - bad password (%d)\n", account_id);
         sylverant_db_result_free(result);
-        return send_gmreply(c, gc, block, 0, 0);
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the privilege level out of the packet */
@@ -461,7 +546,9 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
         debug(DBG_WARN, "Invalid privileges on account %d: %02x\n", account_id,
               priv);
         sylverant_db_result_free(result);
-        return send_gmreply(c, gc, block, 0, 0);
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* We're done if we got this far. */
@@ -485,23 +572,31 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
 
     /* Make sure the requester has permission. */
     sprintf(query, "SELECT account_id FROM guildcards NATURAL JOIN "
-            "account_data  WHERE guildcard='%u' AND isgm>'0'", req);
+            "account_data  WHERE guildcard='%u' AND privlevel>'2'", req);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't fetch account data (%u)\n", req);
-        return 0;
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR, 
+                          (uint8_t *)&pkt->req_gc, 16);
     }
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch account data (%u)\n", req);
-        return 0;
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->req_gc, 16);
     }
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
         debug(DBG_WARN, "No account data or not gm (%u)\n", req);
-        return 0;
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAN_NOT_GM,
+                          (uint8_t *)&pkt->req_gc, 16);
     }
 
     /* We've verified they're legit, continue on. */
@@ -517,7 +612,10 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Could not insert ban into database\n");
-        return 0;
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->req_gc, 16);
     }
 
     /* Now that we have that, add the ban to the right table... */
@@ -533,15 +631,21 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
             break;
 
         default:
-            return 0;
+            return send_error(c, type, SHDR_FAILURE, ERR_BAN_BAD_TYPE,
+                              (uint8_t *)&pkt->req_gc, 16);
     }
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Could not insert ban into database (part 2)\n");
-        return 0;
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR, 
+                          (uint8_t *)&pkt->req_gc, 16);
     }
-    
-    return 0;
+
+    /* Another misuse of the error function, but whatever */
+    return send_error(c, type, SHDR_RESPONSE, ERR_NO_ERROR,
+                      (uint8_t *)&pkt->req_gc, 16);
 }
 
 /* Process one ship packet. */

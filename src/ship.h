@@ -52,6 +52,7 @@ typedef struct ship {
     in_addr_t conn_addr;
     in_addr_t local_addr;
     in_addr_t remote_addr;
+    uint32_t proto_ver;
 
     uint16_t port;
     uint16_t key_idx;

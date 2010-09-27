@@ -23,11 +23,48 @@
 #include "ship.h"
 #include "ship_packets.h"
 
+/* Minimum and maximum supported protocol ship<->shipgate protocol versions */
+#define SHIPGATE_MINIMUM_PROTO_VER 1
+#define SHIPGATE_MAXIMUM_PROTO_VER 1
+
 #ifdef PACKED
 #undef PACKED
 #endif
 
 #define PACKED __attribute__((packed))
+
+/* General error packet. Individual packets can/should extend this base
+   structure for more specific instances and to help match requests up with the
+   error replies. */
+typedef struct shipgate_error {
+    shipgate_hdr_t hdr;
+    uint32_t error_code;
+    uint32_t reserved;
+    uint8_t data[0];
+} PACKED shipgate_error_pkt;
+
+/* Error packet in reply to character data send or character request */
+typedef struct shipgate_cdata_err {
+    shipgate_error_pkt base;
+    uint32_t guildcard;
+    uint32_t slot;
+} PACKED shipgate_cdata_err_pkt;
+
+/* Error packet in reply to gm login */
+typedef struct shipgate_gm_err {
+    shipgate_error_pkt base;
+    uint32_t guildcard;
+    uint32_t block;
+} PACKED shipgate_gm_err_pkt;
+
+/* Error packet in reply to ban */
+typedef struct shipgate_ban_err {
+    shipgate_error_pkt base;
+    uint32_t req_gc;
+    uint32_t target;
+    uint32_t until;
+    uint32_t reserved;
+} PACKED shipgate_ban_err_pkt;
 
 /* The request sent from the shipgate for a ship to identify itself. */
 typedef struct shipgate_login {
@@ -52,7 +89,8 @@ typedef struct shipgate_login_reply {
     uint16_t games;
     uint32_t flags;
     uint16_t menu_code;
-    uint8_t reserved[6];
+    uint8_t reserved[2];
+    uint32_t proto_ver;
 } PACKED shipgate_login_reply_pkt;
 
 /* A update of the client/games count. */
@@ -161,6 +199,30 @@ static const char shipgate_login_msg[] =
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
 #define LOGIN_FLAG_PROXY    0x00000002  /* Is a proxy -- exclude many pkts */
 
+/* General error codes */
+#define ERR_NO_ERROR            0x00000000
+#define ERR_BAD_ERROR           0x80000001
+
+/* Error codes in response to shipgate_login_reply_pkt */
+#define ERR_LOGIN_BAD_KEY       0x00000001
+#define ERR_LOGIN_BAD_PROTO     0x00000002
+#define ERR_LOGIN_BAD_MENU      0x00000003  /* bad menu code (out of range) */
+#define ERR_LOGIN_INVAL_MENU    0x00000004  /* menu code not allowed */
+
+/* Error codes in response to game packets */
+#define ERR_GAME_UNK_PACKET     0x00000001
+
+/* Error codes in response to a character request */
+#define ERR_CREQ_NO_DATA        0x00000001
+
+/* Error codes in response to a gm login */
+#define ERR_GMLOGIN_NO_ACC      0x00000001
+#define ERR_GMLOGIN_NOT_GM      0x00000002
+
+/* Error codes in response to a ban request */
+#define ERR_BAN_NOT_GM          0x00000001
+#define ERR_BAN_BAD_TYPE        0x00000002
+
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
 
@@ -184,5 +246,9 @@ int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p);
 
 /* Send a client/game update packet. */
 int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games);
+
+/* Send an error packet to a ship */
+int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
+               uint8_t *data, int data_sz);
 
 #endif /* !SHIPGATE_H */

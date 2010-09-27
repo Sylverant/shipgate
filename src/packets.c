@@ -85,7 +85,8 @@ static int send_crypt(ship_t *c, int len) {
         return -1;
     }
 
-    RC4(&c->gate_key, len, sendbuf, sendbuf);
+    if(c->key_set)
+        RC4(&c->gate_key, len, sendbuf, sendbuf);
 
     return send_raw(c, len);
 }
@@ -283,4 +284,35 @@ int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games) {
     pkt->ship_id = htonl(ship_id);
 
     return send_crypt(c, sizeof(shipgate_cnt_pkt));
+}
+
+/* Send an error packet to a ship */
+int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
+               uint8_t *data, int data_sz) {
+    shipgate_error_pkt *pkt = (shipgate_error_pkt *)sendbuf;
+    uint16_t sz;
+
+    /* These were first added in protocol version 1. */
+    if(c->proto_ver < 1) {
+        return 0;
+    }
+
+    /* Make sure the data size is valid */
+    if(data_sz > 65536 - sizeof(shipgate_error_pkt)) {
+        return -1;
+    }
+
+    /* Clear the header of the packet */
+    memset(pkt, 0, sizeof(shipgate_error_pkt));
+    sz = sizeof(shipgate_error_pkt) + data_sz;
+
+    /* Fill it in */
+    pkt->hdr.pkt_len = htons(sz);
+    pkt->hdr.pkt_type = htons(type);
+    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
+    pkt->hdr.flags = htons(flags);
+    pkt->error_code = htonl(err);
+    memcpy(pkt->data, data, data_sz);
+
+    return send_crypt(c, sz);
 }
