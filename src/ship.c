@@ -230,6 +230,14 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
         return -1;
     }
 
+    /* Hooray for misusing functions! */
+    if(send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
+        return -1;
+    }
+    else {
+        c->key_set = 1;
+    }
+
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
         send_ship_status(j, c, 1);
@@ -241,14 +249,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
         }
     }
 
-    /* Hooray for misusing functions! */
-    if(send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
-        return -1;
-    }
-    else {
-        c->key_set = 1;
-        return 0;
-    }
+    return 0;
 }
 
 /* Handle a ship's update counters packet. */
