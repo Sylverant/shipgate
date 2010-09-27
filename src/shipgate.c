@@ -142,11 +142,15 @@ void run_server(int sock) {
         now = time(NULL);
 
         /* Fill the sockets into the fd_set so we can use select below. */
-        TAILQ_FOREACH(i, &ships, qentry) {
+        i = TAILQ_FIRST(&ships);
+        while(i) {
+            tmp = TAILQ_NEXT(i, qentry);
+
             /* If we haven't heard from a ship in 2 minutes, its dead.
                Disconnect it. */
             if(now > i->last_message + 120) {
-                i->disconnected = 1;
+                destroy_connection(i);
+                i = tmp;
                 continue;
             }
             /* Otherwise, if we haven't heard from it in a minute, ping it. */
@@ -161,6 +165,7 @@ void run_server(int sock) {
             }
 
             nfds = nfds > i->sock ? nfds : i->sock;
+            i = tmp;
         }
 
         /* Add the main listening socket to the read fd_set */
@@ -168,22 +173,6 @@ void run_server(int sock) {
         nfds = nfds > sock ? nfds : sock;
 
         if(select(nfds + 1, &readfds, &writefds, NULL, &timeout) > 0) {
-            /* Check the listening port to see if we have a ship. */
-            if(FD_ISSET(sock, &readfds)) {
-                len = sizeof(struct sockaddr_in);
-
-                if((asock = accept(sock, (struct sockaddr *)&addr, &len)) < 0) {
-                    perror("accept");
-                }
-
-                debug(DBG_LOG, "Accepted ship connection from %s\n",
-                      inet_ntoa(addr.sin_addr));
-
-                if(create_connection(asock, addr.sin_addr.s_addr) == NULL) {
-                    close(asock);
-                }
-            }
-
             /* Check each ship's socket for activity. */
             TAILQ_FOREACH(i, &ships, qentry) {
                 /* Check if this ship was trying to send us anything. */
@@ -222,20 +211,36 @@ void run_server(int sock) {
                     }
                 }
             }
-        }
 
-        /* Clean up any dead connections (its not safe to do a TAILQ_REMOVE in
-           the middle of a TAILQ_FOREACH, and destroy_connection does indeed
-           use TAILQ_REMOVE). */
-        i = TAILQ_FIRST(&ships);
-        while(i) {
-            tmp = TAILQ_NEXT(i, qentry);
+            /* Clean up any dead connections (its not safe to do a TAILQ_REMOVE
+               in the middle of a TAILQ_FOREACH, and destroy_connection does
+               indeed use TAILQ_REMOVE). */
+            i = TAILQ_FIRST(&ships);
+            while(i) {
+                tmp = TAILQ_NEXT(i, qentry);
 
-            if(i->disconnected) {
-                destroy_connection(i);
+                if(i->disconnected) {
+                    destroy_connection(i);
+                }
+
+                i = tmp;
             }
 
-            i = tmp;
+            /* Check the listening port to see if we have a ship. */
+            if(FD_ISSET(sock, &readfds)) {
+                len = sizeof(struct sockaddr_in);
+
+                if((asock = accept(sock, (struct sockaddr *)&addr, &len)) < 0) {
+                    perror("accept");
+                }
+
+                debug(DBG_LOG, "Accepted ship connection from %s\n",
+                      inet_ntoa(addr.sin_addr));
+
+                if(create_connection(asock, addr.sin_addr.s_addr) == NULL) {
+                    close(asock);
+                }
+            }
         }
     }
 }
