@@ -717,6 +717,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* Grab any results we got */
     if(!(result = sylverant_db_result_store(&conn))) {
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
     }
 
     /* For each bite we get, send out a friend login packet */
