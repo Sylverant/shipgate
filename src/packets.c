@@ -316,3 +316,34 @@ int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
 
     return send_crypt(c, sz);
 }
+
+/* Send a packet to tell a client that a friend has logged on or off */
+int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
+                        uint32_t dest_block, uint32_t friend_gc,
+                        uint32_t friend_block, uint32_t friend_ship,
+                        const char *friend_name) {
+    shipgate_friend_login_pkt *pkt = (shipgate_friend_login_pkt *)sendbuf;
+
+    /* These were first added in protocol version 2. */
+    if(c->proto_ver < 2) {
+        return 0;
+    }
+
+    /* Clear the packet */
+    memset(pkt, 0, sizeof(shipgate_friend_login_pkt));
+
+    /* Fill it in */
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_friend_login_pkt));
+    pkt->hdr.pkt_type = htons((on ? SHDR_TYPE_FRLOGIN : SHDR_TYPE_FRLOGOUT));
+    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->dest_guildcard = htonl(dest_gc);
+    pkt->dest_block = htonl(dest_block);
+    pkt->friend_guildcard = htonl(friend_gc);
+    pkt->friend_ship = htonl(friend_ship);
+    pkt->friend_block = htonl(friend_block);
+    strcpy(pkt->friend_name, friend_name);
+
+    /* Send it away */
+    return send_crypt(c, sizeof(shipgate_friend_login_pkt));
+}

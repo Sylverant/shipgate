@@ -44,6 +44,19 @@ extern sylverant_dbconn_t conn;
 
 static uint8_t recvbuf[65536];
 
+/* Find a ship by its id */
+static ship_t *find_ship(uint16_t id) {
+    ship_t *i;
+
+    TAILQ_FOREACH(i, &ships, qentry) {
+        if(i->key_idx == id) {
+            return i;
+        }
+    }
+
+    return NULL;
+}
+
 /* Create a new connection, storing it in the list of ships. */
 ship_t *create_connection(int sock, in_addr_t addr) {
     ship_t *rv;
@@ -649,6 +662,192 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
                       (uint8_t *)&pkt->req_gc, 16);
 }
 
+static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
+    char query[512];
+    char tmp[128];
+    uint32_t gc, bl, gc2, bl2;
+    uint16_t ship_id;
+    ship_t *c2;
+    void *result;
+    char **row;
+
+    /* Packet introduced in protocol version 2. Error to send in v1. */
+    if(c->proto_ver < 2) {
+        return -1;
+    }
+
+    /* Make sure the name is terminated properly */
+    if(pkt->ch_name[31] != '\0') {
+        return send_error(c, SHDR_TYPE_BLKLOGIN, SHDR_FAILURE,
+                          ERR_BLOGIN_INVAL_NAME, (uint8_t *)&pkt->guildcard,
+                          8);
+    }
+
+    /* Parse out some stuff we'll use */
+    gc = ntohl(pkt->guildcard);
+    bl = ntohl(pkt->blocknum);
+
+    /* Insert the client into the online_clients table */
+    sylverant_db_escape_str(&conn, tmp, pkt->ch_name, strlen(pkt->ch_name));
+    sprintf(query, "INSERT INTO online_clients(guildcard, name, ship_id, "
+            "block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp, c->key_idx, bl);
+
+    /* If the query fails, most likely its a primary key violation, so assume
+       the user is already logged in */
+    if(sylverant_db_query(&conn, query)) {
+        return send_error(c, SHDR_TYPE_BLKLOGIN, SHDR_FAILURE,
+                          ERR_BLOGIN_ONLINE, (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* Find anyone that has the user in their friendlist so we can send a
+       message to them */
+    sprintf(query, "SELECT guildcard, block, ship_id FROM "
+            "online_clients INNER JOIN friendlist ON "
+            "online_clients.guildcard = friendlist.owner WHERE "
+            "friendlist.friend = '%u'", gc);
+
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        /* Silently fail here (to the ship anyway), since this doesn't spell
+           doom at all for the logged in user */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab any results we got */
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+    }
+
+    /* For each bite we get, send out a friend login packet */
+    while((row = sylverant_db_result_fetch(result))) {
+        gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+        bl2 = (uint32_t)strtoul(row[1], NULL, 0);
+        ship_id = (uint16_t)strtoul(row[2], NULL, 0);
+        c2 = find_ship(ship_id);
+
+        if(c2) {
+            send_friend_message(c2, 1, gc2, bl2, gc, bl, ship_id, pkt->ch_name);
+        }
+    }
+
+    sylverant_db_result_free(result);
+
+    /* We're done (no need to tell the ship on success) */
+    return 0;
+}
+
+static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
+    char query[512];
+    uint32_t gc, bl, gc2, bl2;
+    uint16_t ship_id;
+    ship_t *c2;
+    void *result;
+    char **row;
+
+    /* Packet introduced in protocol version 2. Error to send in v1. */
+    if(c->proto_ver < 2) {
+        return -1;
+    }
+
+    /* Make sure the name is terminated properly */
+    if(pkt->ch_name[31] != '\0') {
+        /* Maybe send an error... Probably not worth it at this point */
+        return 0;
+    }
+
+    /* Parse out some stuff we'll use */
+    gc = ntohl(pkt->guildcard);
+    bl = ntohl(pkt->blocknum);
+
+    /* Delete the client from the online_clients table */
+    sprintf(query, "DELETE FROM online_clients WHERE guildcard='%u'", gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        return 0;
+    }
+
+    /* Find anyone that has the user in their friendlist so we can send a
+       message to them */
+    sprintf(query, "SELECT guildcard, block, ship_id FROM "
+            "online_clients INNER JOIN friendlist ON "
+            "online_clients.guildcard = friendlist.owner WHERE "
+            "friendlist.friend = '%u'", gc);
+
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        /* Silently fail here (to the ship anyway), since this doesn't spell
+           doom at all for the logged in user */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab any results we got */
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* For each bite we get, send out a friend logout packet */
+    while((row = sylverant_db_result_fetch(result))) {
+        gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+        bl2 = (uint32_t)strtoul(row[1], NULL, 0);
+        ship_id = (uint16_t)strtoul(row[2], NULL, 0);
+        c2 = find_ship(ship_id);
+
+        if(c2) {
+            send_friend_message(c2, 0, gc2, bl2, gc, bl, ship_id, pkt->ch_name);
+        }
+    }
+
+    sylverant_db_result_free(result);
+
+    /* We're done (no need to tell the ship on success) */
+    return 0;
+}
+
+static int handle_friendlist(ship_t *c, shipgate_friend_upd_pkt *pkt,
+                             uint16_t type) {
+    uint32_t ugc, fgc;
+    char query[256];
+
+    /* Packet introduced in protocol version 2. Error to send in v1. */
+    if(c->proto_ver < 2) {
+        return -1;
+    }
+
+    /* Parse out the guildcards */
+    ugc = ntohl(pkt->user_guildcard);
+    fgc = ntohl(pkt->friend_guildcard);
+
+    /* Build the db query */
+    switch(type) {
+        case SHDR_TYPE_ADDFRIEND:
+            sprintf(query, "INSERT INTO friendlist(owner, friend) "
+                    "VALUES('%u', '%u')", ugc, fgc);
+            break;
+
+        case SHDR_TYPE_DELFRIEND:
+            sprintf(query, "DELETE FROM friendlist WHERE owner='%u' AND "
+                    "friend='%u'", ugc, fgc);
+            break;
+
+        default:
+            return -1;
+    }
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->user_guildcard, 8);
+    }
+
+    /* Return success to the ship */
+    return send_error(c, type, SHDR_RESPONSE, ERR_NO_ERROR,
+                      (uint8_t *)&pkt->user_guildcard, 8);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -695,6 +894,16 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
         case SHDR_TYPE_GCBAN:
         case SHDR_TYPE_IPBAN:
             return handle_ban(c, (shipgate_ban_req_pkt *)pkt, type);
+
+        case SHDR_TYPE_BLKLOGIN:
+            return handle_blocklogin(c, (shipgate_block_login_pkt *)pkt);
+
+        case SHDR_TYPE_BLKLOGOUT:
+            return handle_blocklogout(c, (shipgate_block_login_pkt *)pkt);
+
+        case SHDR_TYPE_ADDFRIEND:
+        case SHDR_TYPE_DELFRIEND:
+            return handle_friendlist(c, (shipgate_friend_upd_pkt *)pkt, type);
 
         default:
             return -3;

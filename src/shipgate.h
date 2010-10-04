@@ -25,7 +25,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 1
+#define SHIPGATE_MAXIMUM_PROTO_VER 2
 
 #ifdef PACKED
 #undef PACKED
@@ -169,6 +169,33 @@ typedef struct shipgate_ban_req {
     char message[256];
 } PACKED shipgate_ban_req_pkt;
 
+/* Packet used to tell the shipgate that a user has logged into/off a block */
+typedef struct shipgate_block_login {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t blocknum;
+    char ch_name[32];
+} PACKED shipgate_block_login_pkt;
+
+/* Packet to tell a ship that a client's friend has logged in/out */
+typedef struct shipgate_friend_login {
+    shipgate_hdr_t hdr;
+    uint32_t dest_guildcard;
+    uint32_t dest_block;
+    uint32_t friend_guildcard;
+    uint32_t friend_ship;
+    uint32_t friend_block;
+    uint32_t reserved;
+    char friend_name[32];
+} PACKED shipgate_friend_login_pkt;
+
+/* Packet to update a user's friendlist (used for either add or remove) */
+typedef struct shipgate_friend_upd {
+    shipgate_hdr_t hdr;
+    uint32_t user_guildcard;
+    uint32_t friend_guildcard;
+} PACKED shipgate_friend_upd_pkt;
+    
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -194,6 +221,12 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_GMLOGIN   0x0016      /* Login request for a Global GM */
 #define SHDR_TYPE_GCBAN     0x0017      /* Guildcard ban */
 #define SHDR_TYPE_IPBAN     0x0018      /* IP ban */
+#define SHDR_TYPE_BLKLOGIN  0x0019      /* User logs into a block */
+#define SHDR_TYPE_BLKLOGOUT 0x001A      /* User logs off a block */
+#define SHDR_TYPE_FRLOGIN   0x001B      /* A user's friend logs onto a block */
+#define SHDR_TYPE_FRLOGOUT  0x001C      /* A user's friend logs off a block */
+#define SHDR_TYPE_ADDFRIEND 0x001D      /* Add a friend to a user's list */
+#define SHDR_TYPE_DELFRIEND 0x001E      /* Remove a friend from a user's list */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -223,6 +256,10 @@ static const char shipgate_login_msg[] =
 #define ERR_BAN_NOT_GM          0x00000001
 #define ERR_BAN_BAD_TYPE        0x00000002
 
+/* Error codes in response to a block login */
+#define ERR_BLOGIN_INVAL_NAME   0x00000001
+#define ERR_BLOGIN_ONLINE       0x00000002
+
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
 
@@ -250,5 +287,11 @@ int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games);
 /* Send an error packet to a ship */
 int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
                uint8_t *data, int data_sz);
+
+/* Send a packet to tell a client that a friend has logged on or off */
+int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
+                        uint32_t dest_block, uint32_t friend_gc,
+                        uint32_t friend_block, uint32_t friend_ship,
+                        const char *friend_name);
 
 #endif /* !SHIPGATE_H */
