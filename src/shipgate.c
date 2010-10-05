@@ -114,9 +114,15 @@ static void load_config() {
         exit(1);
     }
 
-    debug(DBG_LOG, "Clearing online ships...\n");
+    debug(DBG_LOG, "Clearing online_ships...\n");
     if(sylverant_db_query(&conn, "DELETE FROM online_ships")) {
-        debug(DBG_ERROR, "Error clearing online ships\n");
+        debug(DBG_ERROR, "Error clearing online_ships\n");
+        exit(1);
+    }
+
+    debug(DBG_LOG, "Clearing online_clients...\n");
+    if(sylverant_db_query(&conn, "DELETE FROM online_clients")) {
+        debug(DBG_ERROR, "Error clearing online_clients\n");
         exit(1);
     }
 }
