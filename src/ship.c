@@ -116,6 +116,14 @@ void destroy_connection(ship_t *c) {
             debug(DBG_ERROR, "Couldn't clear %s from the online_ships table\n",
                   c->name);
         }
+
+        /* Remove any clients in the online_clients table on that ship */
+        sprintf(query, "DELETE FROM online_clients WHERE ship_id='%hu'",
+                c->key_idx);
+
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_ERROR, "Couldn't clear %s online_clients\n", c->name);
+        }
     }
 
     /* Clean up the ship's structure. */
