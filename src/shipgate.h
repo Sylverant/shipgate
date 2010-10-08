@@ -25,7 +25,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 2
+#define SHIPGATE_MAXIMUM_PROTO_VER 3
 
 #ifdef PACKED
 #undef PACKED
@@ -195,7 +195,39 @@ typedef struct shipgate_friend_upd {
     uint32_t user_guildcard;
     uint32_t friend_guildcard;
 } PACKED shipgate_friend_upd_pkt;
-    
+
+/* Packet to update a user's lobby in the shipgate's info */
+typedef struct shipgate_lobby_change {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t lobby_id;
+    char lobby_name[32];
+} PACKED shipgate_lobby_change_pkt;
+
+/* Packet to send a list of online clients (for when a ship reconnects to the
+   shipgate) */
+typedef struct shipgate_block_clients {
+    shipgate_hdr_t hdr;
+    uint32_t count;
+    uint32_t block;
+    struct {
+        uint32_t guildcard;
+        uint32_t lobby;
+        char ch_name[32];
+        char lobby_name[32];
+    } entries[0];
+} PACKED shipgate_block_clients_pkt;
+
+/* A kick request, sent to or from a ship */
+typedef struct shipgate_kick_req {
+    shipgate_hdr_t hdr;
+    uint32_t requester;
+    uint32_t reserved;
+    uint32_t guildcard;
+    uint32_t block;                     /* 0 for ship->shipgate */
+    char reason[64];
+} PACKED shipgate_kick_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -227,6 +259,9 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_FRLOGOUT  0x001C      /* A user's friend logs off a block */
 #define SHDR_TYPE_ADDFRIEND 0x001D      /* Add a friend to a user's list */
 #define SHDR_TYPE_DELFRIEND 0x001E      /* Remove a friend from a user's list */
+#define SHDR_TYPE_LOBBYCHG  0x001F      /* A user changes lobbies */
+#define SHDR_TYPE_BCLIENTS  0x0020      /* A bulk transfer of client info */
+#define SHDR_TYPE_KICK      0x0021      /* A kick request */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -293,5 +328,9 @@ int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
                         uint32_t dest_block, uint32_t friend_gc,
                         uint32_t friend_block, uint32_t friend_ship,
                         const char *friend_name);
+
+/* Send a kick packet */
+int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
+              const char *reason);
 
 #endif /* !SHIPGATE_H */

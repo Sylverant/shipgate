@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/socket.h>
 
 #include <openssl/rc4.h>
@@ -770,7 +771,8 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     bl = ntohl(pkt->blocknum);
 
     /* Delete the client from the online_clients table */
-    sprintf(query, "DELETE FROM online_clients WHERE guildcard='%u'", gc);
+    sprintf(query, "DELETE FROM online_clients WHERE guildcard='%u' AND "
+            "ship_id='%hu'", gc, c->key_idx);
 
     if(sylverant_db_query(&conn, query)) {
         return 0;
@@ -857,6 +859,197 @@ static int handle_friendlist(ship_t *c, shipgate_friend_upd_pkt *pkt,
                       (uint8_t *)&pkt->user_guildcard, 8);
 }
 
+static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
+    char query[512];
+    char tmp[128];
+    uint32_t gc, lid;
+
+    /* Packet introduced in protocol version 3. Error to send in v2/v1. */
+    if(c->proto_ver < 3) {
+        return -1;
+    }
+
+    /* Make sure the name is terminated properly */
+    pkt->lobby_name[31] = 0;
+
+    /* Parse out some stuff we'll use */
+    gc = ntohl(pkt->guildcard);
+    lid = ntohl(pkt->lobby_id);
+
+    /* Update the client's entry */
+    sylverant_db_escape_str(&conn, tmp, pkt->lobby_name,
+                            strlen(pkt->lobby_name));
+    sprintf(query, "UPDATE online_clients SET lobby_id='%u', lobby='%s' WHERE "
+            "guildcard='%u' AND ship_id='%hu'", lid, tmp, gc, c->key_idx);
+
+    /* This shouldn't ever "fail" so to speak... */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* We're done (no need to tell the ship on success) */
+    return 0;
+}
+
+static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
+    char query[512];
+    char tmp[128], tmp2[128];
+    uint32_t gc, lid, count, bl, i;
+    uint16_t len;
+
+    /* Packet introduced in protocol version 3. Error to send in v2/v1. */
+    if(c->proto_ver < 3) {
+        return -1;
+    }
+
+    /* Verify the length is right */
+    count = ntohl(pkt->count);
+    len = ntohs(pkt->hdr.pkt_len);
+
+    if(len != 16 + count * 72 || count < 1) {
+        debug(DBG_WARN, "Invalid block clients packet received\n");
+        return -1;
+    }
+
+    /* Grab the global stuff */
+    bl = ntohl(pkt->block);
+
+    /* Make sure there's nothing for this ship/block in the db */
+    sprintf(query, "DELETE FROM online_clients WHERE ship_id='%hu' AND "
+            "block='%u'", c->key_idx, bl);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return -1;
+    }
+
+    /* Run through each entry */
+    for(i = 0; i < count; ++i) {
+        /* Make sure the names look sane */
+        if(pkt->entries[i].ch_name[31] || pkt->entries[i].lobby_name[31]) {
+            continue;
+        }
+
+        /* Grab the integers out */
+        gc = ntohl(pkt->entries[i].guildcard);
+        lid = ntohl(pkt->entries[i].lobby);        
+
+        /* Escape the name string */
+        sylverant_db_escape_str(&conn, tmp, pkt->entries[i].ch_name,
+                                strlen(pkt->entries[i].ch_name));
+
+        /* If we're not in a lobby, that's all we need */
+        if(lid == 0) {
+            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
+                    "ship_id, block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp,
+                    c->key_idx, bl);
+        }
+        else {
+            sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
+                                    strlen(pkt->entries[i].lobby_name));
+            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
+                    "ship_id, block, lobby_id, lobby) VALUES('%u', '%s', "
+                    "'%hu', '%u', '%u', '%s')", gc, tmp, c->key_idx, bl, lid,
+                    tmp2);
+        }
+
+        /* Run the query */
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+            continue;
+        }
+    }
+
+    /* We're done (no need to tell the ship on success) */
+    return 0;
+}
+
+static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
+    uint32_t gc, gcr, bl;
+    uint16_t sid;
+    char query[256];
+    void *result;
+    char **row;
+    ship_t *c2;
+
+    /* Parse out what we care about */
+    gcr = ntohl(pkt->requester);
+    gc = ntohl(pkt->guildcard);
+
+    /* Make sure the requester is a GM */
+    sprintf(query, "SELECT account_id FROM account_data NATURAL JOIN "
+            "guildcards WHERE privlevel>'1' AND guildcard='%u'", gcr);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data from the DB */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch GM data (%u)\n", gcr);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return 0;
+    }
+
+    /* Make sure we actually have a row, if not the ship is possibly trying to
+       trick us into giving someone without GM privileges GM abilities... */
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "Failed kick - not gm (gc: %u ship: %hu)\n", gcr,
+              c->key_idx);
+
+        return -1;
+    }
+
+    /* We're done with the data we got (we didn't really care about it anyway,
+       other than making sure there was SOMETHING) */
+    sylverant_db_result_free(result);
+
+    /* Now that we're done with that, work on the kick */
+    sprintf(query, "SELECT ship_id, block FROM online_clients WHERE "
+            "guildcard='%u'", gc);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data from the DB */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch online data (%u)\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return 0;
+    }
+
+    /* Grab the location of the user. If the user's not on, silently fail */
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        return 0;
+    }
+
+    /* If we're here, we have a row, so parse out what we care about */
+    errno = 0;
+    sid = (uint16_t)strtoul(row[0], NULL, 0);
+    bl = (uint32_t)strtoul(row[1], NULL, 0);
+    sylverant_db_result_free(result);
+
+    if(errno != 0) {
+        debug(DBG_WARN, "Invalid online_clients data: %s\n", strerror(errno));
+        return 0;
+    }
+
+    /* Grab the ship we need to send this to */
+    if(!(c2 = find_ship(sid))) {
+        debug(DBG_WARN, "Invalid ship?!?\n");
+        return -1;
+    }
+
+    /* Send off the message */
+    send_kick(c2, gcr, gc, bl, pkt->reason);
+    return 0;
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -913,6 +1106,15 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
         case SHDR_TYPE_ADDFRIEND:
         case SHDR_TYPE_DELFRIEND:
             return handle_friendlist(c, (shipgate_friend_upd_pkt *)pkt, type);
+
+        case SHDR_TYPE_LOBBYCHG:
+            return handle_lobby_chg(c, (shipgate_lobby_change_pkt *)pkt);
+
+        case SHDR_TYPE_BCLIENTS:
+            return handle_block_clients(c, (shipgate_block_clients_pkt *)pkt);
+
+        case SHDR_TYPE_KICK:
+            return handle_kick(c, (shipgate_kick_pkt *)pkt);
 
         default:
             return -3;

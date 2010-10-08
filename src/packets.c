@@ -347,3 +347,34 @@ int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
     /* Send it away */
     return send_crypt(c, sizeof(shipgate_friend_login_pkt));
 }
+
+/* Send a kick packet */
+int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
+              const char *reason) {
+    shipgate_kick_pkt *pkt = (shipgate_kick_pkt *)sendbuf;
+
+    /* This appeared in v3, so don't send it to earlier ships */
+    if(c->proto_ver < 3) {
+        return 0;
+    }
+
+    /* Scrub the buffer */
+    memset(pkt, 0, sizeof(shipgate_kick_pkt));
+
+    /* Fill in the packet */
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_kick_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_KICK);
+    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    pkt->requester = htonl(requester);
+    pkt->guildcard = htonl(user);
+    pkt->block = htonl(block);
+
+    if(reason) {
+        strncpy(pkt->reason, reason, 64);
+    }
+
+    /* Send the packet away */
+    return send_crypt(c, sizeof(shipgate_kick_pkt));
+}
