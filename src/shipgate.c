@@ -32,7 +32,6 @@
 
 #include "shipgate.h"
 #include "ship.h"
-#include "ship_packets.h"
 
 /* Storage for our list of ships. */
 struct ship_queue ships = TAILQ_HEAD_INITIALIZER(ships);

@@ -21,7 +21,7 @@
 #include <inttypes.h>
 
 #include "ship.h"
-#include "ship_packets.h"
+#include "packets.h"
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1

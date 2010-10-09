@@ -306,8 +306,8 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
     debug(DBG_LOG, "DC: Received %02X\n", type);
 
     switch(type) {
-        case SHIP_GUILD_SEARCH_TYPE:
-        case SHIP_SIMPLE_MAIL_TYPE:
+        case GUILD_SEARCH_TYPE:
+        case SIMPLE_MAIL_TYPE:
             /* Forward these to all ships other than the sender. */
             TAILQ_FOREACH(i, &ships, qentry) {
                 if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
@@ -317,7 +317,7 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 
             return 0;
 
-        case SHIP_DC_GUILD_REPLY_TYPE:
+        case GUILD_REPLY_TYPE:
             /* Send this one to the original sender. */
             tmp = ntohl(pkt->ship_id);
 
@@ -345,7 +345,7 @@ static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
     debug(DBG_LOG, "PC: Received %02X\n", type);
 
     switch(type) {
-        case SHIP_SIMPLE_MAIL_TYPE:
+        case SIMPLE_MAIL_TYPE:
             /* Forward these to all ships other than the sender. */
             TAILQ_FOREACH(i, &ships, qentry) {
                 if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
