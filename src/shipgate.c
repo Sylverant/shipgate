@@ -258,7 +258,7 @@ int main(int argc, char *argv[]) {
     parse_command_line(argc, argv);
     load_config();
     
-    chdir(SYLVERANT_DIRECTORY);
+    chdir(sylverant_directory);
 
     /* Create the socket and listen for connections. */
     sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
