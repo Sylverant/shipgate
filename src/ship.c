@@ -297,9 +297,247 @@ static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
     return 0;
 }
 
+static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
+    uint32_t guildcard = LE32(pkt->gc_dest);
+    char query[256];
+    void *result;
+    char **row;
+    uint16_t ship_id;
+    ship_t *s;
+
+    /* Figure out where the user requested is */
+    sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
+            guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "DC Mail Error: %s", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch DC mail result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        /* Either the user is not online or we're dealing with a ship that does
+           not support protocol v2, send the packet to any protocol v1 ships,
+           just to be sure... */
+        sylverant_db_result_free(result);
+
+        TAILQ_FOREACH(s, &ships, qentry) {
+            if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
+                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+            }
+        }
+
+        return 0;
+    }
+
+    /* Grab the data from the result */
+    errno = 0;
+    ship_id = (uint16_t)strtoul(row[0], NULL, 0);
+    sylverant_db_result_free(result);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in dc mail: %s", strerror(errno));
+        return 0;
+    }
+
+    /* If we've got this far, we should have the ship we need to send to */
+    s = find_ship(ship_id);
+    if(!s) {
+        debug(DBG_WARN, "Invalid ship?!?!\n");
+        return 0;
+    }
+
+    /* Send it on, and finish up... */
+    forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+    return 0;
+}
+
+static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
+    uint32_t guildcard = LE32(pkt->gc_dest);
+    char query[256];
+    void *result;
+    char **row;
+    uint16_t ship_id;
+    ship_t *s;
+
+    /* Figure out where the user requested is */
+    sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
+            guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "PC Mail Error: %s", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch PC mail result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        /* Either the user is not online or we're dealing with a ship that does
+           not support protocol v2, send the packet to any protocol v1 ships,
+           just to be sure... */
+        sylverant_db_result_free(result);
+
+        TAILQ_FOREACH(s, &ships, qentry) {
+            if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
+                forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+            }
+        }
+
+        return 0;
+    }
+
+    /* Grab the data from the result */
+    errno = 0;
+    ship_id = (uint16_t)strtoul(row[0], NULL, 0);
+    sylverant_db_result_free(result);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in pc mail: %s", strerror(errno));
+        return 0;
+    }
+
+    /* If we've got this far, we should have the ship we need to send to */
+    s = find_ship(ship_id);
+    if(!s) {
+        debug(DBG_WARN, "Invalid ship?!?!?\n");
+        return 0;
+    }
+
+    /* Send it on, and finish up... */
+    forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+    return 0;
+}
+
+static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
+    uint32_t guildcard = LE32(pkt->gc_target);
+    char query[512];
+    void *result;
+    char **row;
+    uint16_t ship_id, port;
+    uint32_t lobby_id, ip, int_ip, block;
+    ship_t *s;
+    dc_guild_reply_pkt reply;
+
+    /* Figure out where the user requested is */
+    sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
+            "lobby, lobby_id, online_ships.name, ip, port, int_ip, gm_only "
+            "FROM online_clients INNER JOIN online_ships ON "
+            "online_clients.ship_id = online_ships.ship_id WHERE "
+            "guildcard='%u'", guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Guild Search Error: %s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch Guild Search result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        /* Either the user is not online or we're dealing with a ship that does
+           not support protocol v2, send the packet to any protocol v1 ships,
+           just to be sure... */
+        TAILQ_FOREACH(s, &ships, qentry) {
+            if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
+                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+            }
+        }
+
+        goto out;
+    }
+
+    /* Make sure the user isn't on a GM only ship... if they are, bail now */
+    if(atoi(row[9])) {
+        goto out;
+    }
+
+    /* Grab the ship we're looking at first */
+    errno = 0;
+    ship_id = (uint16_t)strtoul(row[1], NULL, 0);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in guild ship: %s", strerror(errno));
+        goto out;
+    }
+
+    /* If we've got this far, we should have the ship we need to send to */
+    s = find_ship(ship_id);
+    if(!s) {
+        debug(DBG_WARN, "Invalid ship?!?!?!\n");
+        goto out;
+    }
+
+    /* If either of these are NULL, either the ship doesn't have protocol v3
+       support, or the user is not in a lobby, check which it is. If the former,
+       forward the packet to it, so it can answer. If the latter, then the
+       client doesn't really exist just yet. */
+    if(row[4] == NULL || row[3] == NULL) {
+        if(s->proto_ver < 3) {
+            forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+        }
+
+        goto out;
+    }
+
+    /* Grab the data from the result */
+    port = (uint16_t)strtoul(row[7], NULL, 0);
+    block = (uint32_t)strtoul(row[2], NULL, 0);
+    lobby_id = (uint32_t)strtoul(row[4], NULL, 0);
+    ip = (uint32_t)strtoul(row[6], NULL, 0);
+    int_ip = (uint32_t)strtoul(row[8], NULL, 0);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in guild search: %s", strerror(errno));
+        goto out;
+    }
+
+    /* Set up the reply, we should have enough data now */
+    memset(&reply, 0, DC_GUILD_REPLY_LENGTH);
+
+    /* Fill it in */
+    reply.hdr.pkt_type = GUILD_REPLY_TYPE;
+    reply.hdr.pkt_len = LE16(DC_GUILD_REPLY_LENGTH);
+    reply.tag = LE32(0x00010000);
+    reply.gc_search = pkt->gc_search;
+    reply.gc_target = pkt->gc_target;
+    reply.ip = ip;
+    reply.port = LE16((port + block * 3));
+    reply.menu_id = LE32(0xFFFFFFFF);
+    reply.item_id = LE32(lobby_id);
+    strcpy(reply.name, row[0]);
+
+    if(row[3][0] == '\t') {
+        sprintf(reply.location, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+    }
+    else {
+        sprintf(reply.location, "\tE%s,BLOCK%02d,%s", row[3], block, row[5]);
+    }
+
+    /* Send it away */
+    forward_dreamcast(s, (dc_pkt_hdr_t *)&reply, c->key_idx);
+
+out:
+    /* Finally, we're finished, clean up and return! */
+    sylverant_db_result_free(result);
+    return 0;
+}
+
 /* Handle a ship's forwarded Dreamcast packet. */
 static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
-    uint8_t type = pkt->pkt.pkt_type;
+    dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
+    uint8_t type = hdr->pkt_type;
     ship_t *i;
     uint32_t tmp;
 
@@ -307,23 +545,24 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 
     switch(type) {
         case GUILD_SEARCH_TYPE:
-        case SIMPLE_MAIL_TYPE:
-            /* Forward these to all ships other than the sender. */
-            TAILQ_FOREACH(i, &ships, qentry) {
-                if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
-                    forward_dreamcast(i, &pkt->pkt, c->key_idx);
-                }
-            }
+            return handle_guild_search(c, (dc_guild_search_pkt *)hdr);
 
-            return 0;
+        case SIMPLE_MAIL_TYPE:
+            return handle_dc_mail(c, (dc_simple_mail_pkt *)hdr);
 
         case GUILD_REPLY_TYPE:
+            /* We shouldn't get these anymore if a ship supports protocol v3 or
+               higher, since we shouldn't have sent them... */
+            if(c->proto_ver > 2) {
+                return -1;
+            }
+
             /* Send this one to the original sender. */
             tmp = ntohl(pkt->ship_id);
 
             TAILQ_FOREACH(i, &ships, qentry) {
                 if(i->key_idx == tmp) {
-                    return forward_dreamcast(i, &pkt->pkt, c->key_idx);
+                    return forward_dreamcast(i, hdr, c->key_idx);
                 }
             }
 
@@ -339,21 +578,14 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 
 /* Handle a ship's forwarded PC packet. */
 static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
-    uint8_t type = pkt->pkt.pkt_type;
-    ship_t *i;
+    dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
+    uint8_t type = hdr->pkt_type;
 
     debug(DBG_LOG, "PC: Received %02X\n", type);
 
     switch(type) {
         case SIMPLE_MAIL_TYPE:
-            /* Forward these to all ships other than the sender. */
-            TAILQ_FOREACH(i, &ships, qentry) {
-                if(i != c && !(i->flags & LOGIN_FLAG_PROXY)) {
-                    forward_pc(i, &pkt->pkt, c->key_idx);
-                }
-            }
-
-            return 0;
+            return handle_pc_mail(c, (pc_simple_mail_pkt *)hdr);
 
         default:
             /* Warn the ship that sent the packet, then drop it */

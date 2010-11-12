@@ -106,7 +106,7 @@ typedef struct shipgate_fw {
     shipgate_hdr_t hdr;
     uint32_t ship_id;
     uint32_t reserved;
-    dc_pkt_hdr_t pkt;
+    uint8_t pkt[0];
 } PACKED shipgate_fw_pkt;
 
 /* A packet telling clients that a ship has started or dropped. */
