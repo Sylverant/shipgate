@@ -113,7 +113,7 @@ int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender) {
     pkt->ship_id = htonl(sender);
 
     /* Copy in the packet, unchanged */
-    memcpy(&pkt->pkt, dc, dc_len);
+    memcpy(pkt->pkt, dc, dc_len);
 
     /* Send the packet away */
     return send_crypt(c, full_len);
@@ -141,7 +141,7 @@ int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender) {
     pkt->ship_id = htonl(sender);
 
     /* Copy in the packet, unchanged */
-    memcpy(&pkt->pkt, pc, pc_len);
+    memcpy(pkt->pkt, pc, pc_len);
 
     /* Send the packet away */
     return send_crypt(c, full_len);
