@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -25,10 +25,10 @@
 #include <sys/socket.h>
 
 #include <openssl/rc4.h>
+#include <openssl/sha.h>
 
 #include <sylverant/debug.h>
 #include <sylverant/database.h>
-#include <sylverant/sha4.h>
 #include <sylverant/mtwist.h>
 #include <sylverant/md5.h>
 
@@ -211,7 +211,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     }
 
     /* Hash the key with SHA-512, and use that as our final key. */
-    sha4(key, 128, hash, 0);
+    SHA512(key, 128, hash);
     RC4_set_key(&c->gate_key, 64, hash);
 
     /* Calculate the final ship key. */
@@ -223,7 +223,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     }
 
     /* Hash the key with SHA-512, and use that as our final key. */
-    sha4(key, 128, hash, 0);
+    SHA512(key, 128, hash);
     RC4_set_key(&c->ship_key, 64, hash);
 
     c->remote_addr = pkt->ship_addr;
@@ -942,7 +942,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
 
     /* Find anyone that has the user in their friendlist so we can send a
        message to them */
-    sprintf(query, "SELECT guildcard, block, ship_id FROM "
+    sprintf(query, "SELECT guildcard, block, ship_id, nickname FROM "
             "online_clients INNER JOIN friendlist ON "
             "online_clients.guildcard = friendlist.owner WHERE "
             "friendlist.friend = '%u'", gc);
@@ -969,7 +969,8 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
         c2 = find_ship(ship_id);
 
         if(c2) {
-            send_friend_message(c2, 1, gc2, bl2, gc, bl, ship_id, pkt->ch_name);
+            send_friend_message(c2, 1, gc2, bl2, gc, bl, ship_id, pkt->ch_name,
+                                row[3]);
         }
     }
 
@@ -1012,7 +1013,7 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
 
     /* Find anyone that has the user in their friendlist so we can send a
        message to them */
-    sprintf(query, "SELECT guildcard, block, ship_id FROM "
+    sprintf(query, "SELECT guildcard, block, ship_id, nickname FROM "
             "online_clients INNER JOIN friendlist ON "
             "online_clients.guildcard = friendlist.owner WHERE "
             "friendlist.friend = '%u'", gc);
@@ -1039,7 +1040,8 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
         c2 = find_ship(ship_id);
 
         if(c2) {
-            send_friend_message(c2, 0, gc2, bl2, gc, bl, ship_id, pkt->ch_name);
+            send_friend_message(c2, 0, gc2, bl2, gc, bl, ship_id, pkt->ch_name,
+                                row[3]);
         }
     }
 
@@ -1049,6 +1051,46 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     return 0;
 }
 
+static int handle_friendlist_add(ship_t *c, shipgate_friend_add_pkt *pkt) {
+    uint32_t ugc, fgc;
+    char query[256];
+    char nickname[64];
+
+    /* Packet updated in protocol version 4. */
+    if(c->proto_ver < 4) {
+        return -1;
+    }
+
+    /* Make sure the length is sane */
+    if(pkt->hdr.pkt_len != htons(sizeof(shipgate_friend_add_pkt))) {
+        return -1;
+    }
+
+    /* Parse out the guildcards */
+    ugc = ntohl(pkt->user_guildcard);
+    fgc = ntohl(pkt->friend_guildcard);
+
+    /* Escape the name string */
+    pkt->friend_nick[31] = 0;
+    sylverant_db_escape_str(&conn, nickname, pkt->friend_nick,
+                            strlen(pkt->friend_nick));
+
+    /* Build the db query */
+    sprintf(query, "INSERT INTO friendlist(owner, friend, nickname) "
+            "VALUES('%u', '%u', '%s')", ugc, fgc, nickname);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_ADDFRIEND, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->user_guildcard, 8);
+    }
+
+    /* Return success to the ship */
+    return send_error(c, SHDR_TYPE_ADDFRIEND, SHDR_RESPONSE, ERR_NO_ERROR,
+                      (uint8_t *)&pkt->user_guildcard, 8);
+}
+
 static int handle_friendlist(ship_t *c, shipgate_friend_upd_pkt *pkt,
                              uint16_t type) {
     uint32_t ugc, fgc;
@@ -1056,6 +1098,17 @@ static int handle_friendlist(ship_t *c, shipgate_friend_upd_pkt *pkt,
 
     /* Packet introduced in protocol version 2. Error to send in v1. */
     if(c->proto_ver < 2) {
+        return -1;
+    }
+
+    /* If we're on protocol version 4, then this should be the new type of
+       friend add packet. */
+    if(c->proto_ver >= 4 && type == SHDR_TYPE_ADDFRIEND) {
+        return handle_friendlist_add(c, (shipgate_friend_add_pkt *)pkt);
+    }
+
+    /* Make sure the length is sane */
+    if(pkt->hdr.pkt_len != htons(sizeof(shipgate_friend_upd_pkt))) {
         return -1;
     }
 

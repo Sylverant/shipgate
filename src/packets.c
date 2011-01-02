@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -321,7 +321,7 @@ int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
 int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
                         uint32_t dest_block, uint32_t friend_gc,
                         uint32_t friend_block, uint32_t friend_ship,
-                        const char *friend_name) {
+                        const char *friend_name, const char *nickname) {
     shipgate_friend_login_pkt *pkt = (shipgate_friend_login_pkt *)sendbuf;
 
     /* These were first added in protocol version 2. */
@@ -344,8 +344,28 @@ int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
     pkt->friend_block = htonl(friend_block);
     strcpy(pkt->friend_name, friend_name);
 
-    /* Send it away */
-    return send_crypt(c, sizeof(shipgate_friend_login_pkt));
+    /* Protocol version 4 brought a slightly newer form that allows nicknames to
+       be assigned to entries. */
+    if(c->proto_ver >= 4) {
+        shipgate_friend_login_4_pkt *pkt2 = (shipgate_friend_login_4_pkt *)pkt;
+
+        pkt2->hdr.pkt_len = htons(sizeof(shipgate_friend_login_4_pkt));
+        pkt2->hdr.pkt_unc_len = pkt2->hdr.pkt_len;
+
+        if(nickname) {
+            strncpy(pkt2->friend_nick, nickname, 32);
+            pkt2->friend_nick[31] = 0;
+        }
+        else {
+            memset(pkt2->friend_nick, 0, 32);
+        }
+
+        return send_crypt(c, sizeof(shipgate_friend_login_4_pkt));
+    }
+    else {
+        /* Send it away */
+        return send_crypt(c, sizeof(shipgate_friend_login_pkt));
+    }
 }
 
 /* Send a kick packet */

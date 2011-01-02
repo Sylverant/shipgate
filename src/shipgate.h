@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -25,7 +25,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 3
+#define SHIPGATE_MAXIMUM_PROTO_VER 4
 
 #ifdef PACKED
 #undef PACKED
@@ -189,12 +189,33 @@ typedef struct shipgate_friend_login {
     char friend_name[32];
 } PACKED shipgate_friend_login_pkt;
 
+/* Updated version of above packet for protocol version 4 */
+typedef struct shipgate_friend_login_4 {
+    shipgate_hdr_t hdr;
+    uint32_t dest_guildcard;
+    uint32_t dest_block;
+    uint32_t friend_guildcard;
+    uint32_t friend_ship;
+    uint32_t friend_block;
+    uint32_t reserved;
+    char friend_name[32];
+    char friend_nick[32];
+} PACKED shipgate_friend_login_4_pkt;
+
 /* Packet to update a user's friendlist (used for either add or remove) */
 typedef struct shipgate_friend_upd {
     shipgate_hdr_t hdr;
     uint32_t user_guildcard;
     uint32_t friend_guildcard;
 } PACKED shipgate_friend_upd_pkt;
+
+/* Packet to add a user to a friendlist (updated in protocol version 4) */
+typedef struct shipgate_friend_add {
+    shipgate_hdr_t hdr;
+    uint32_t user_guildcard;
+    uint32_t friend_guildcard;
+    char friend_nick[32];
+} PACKED shipgate_friend_add_pkt;
 
 /* Packet to update a user's lobby in the shipgate's info */
 typedef struct shipgate_lobby_change {
@@ -327,7 +348,7 @@ int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
 int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
                         uint32_t dest_block, uint32_t friend_gc,
                         uint32_t friend_block, uint32_t friend_ship,
-                        const char *friend_name);
+                        const char *friend_name, const char *nickname);
 
 /* Send a kick packet */
 int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
