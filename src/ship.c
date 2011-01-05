@@ -969,8 +969,8 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
         c2 = find_ship(ship_id);
 
         if(c2) {
-            send_friend_message(c2, 1, gc2, bl2, gc, bl, ship_id, pkt->ch_name,
-                                row[3]);
+            send_friend_message(c2, 1, gc2, bl2, gc, bl, c->key_idx,
+                                pkt->ch_name, row[3]);
         }
     }
 
@@ -1040,8 +1040,8 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
         c2 = find_ship(ship_id);
 
         if(c2) {
-            send_friend_message(c2, 0, gc2, bl2, gc, bl, ship_id, pkt->ch_name,
-                                row[3]);
+            send_friend_message(c2, 0, gc2, bl2, gc, bl, c->key_idx,
+                                pkt->ch_name, row[3]);
         }
     }
 
