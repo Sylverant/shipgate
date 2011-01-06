@@ -526,7 +526,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     }
 
     /* Send it away */
-    forward_dreamcast(s, (dc_pkt_hdr_t *)&reply, c->key_idx);
+    forward_dreamcast(c, (dc_pkt_hdr_t *)&reply, c->key_idx);
 
 out:
     /* Finally, we're finished, clean up and return! */
