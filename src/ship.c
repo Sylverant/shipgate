@@ -237,10 +237,11 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     strcpy(c->name, pkt->name);
 
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
-            "ship_id, gm_only, games, menu_code) VALUES ('%s', '%hu', '%u', "
-            "'%hu', '%u', '%u', '%d', '%hu', '%hu')", c->name, c->clients,
-            ntohl(c->remote_addr), c->port, ntohl(c->local_addr), c->key_idx,
-            !!(c->flags & LOGIN_FLAG_GMONLY), c->games, c->menu_code);
+            "ship_id, gm_only, games, menu_code, flags) VALUES ('%s', '%hu',"
+            "'%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u')", c->name,
+            c->clients, ntohl(c->remote_addr), c->port, ntohl(c->local_addr),
+            c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY), c->games,
+            c->menu_code, c->flags);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
