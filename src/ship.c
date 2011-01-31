@@ -542,8 +542,6 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
     ship_t *i;
     uint32_t tmp;
 
-    debug(DBG_LOG, "DC: Received %02X\n", type);
-
     switch(type) {
         case GUILD_SEARCH_TYPE:
             return handle_guild_search(c, (dc_guild_search_pkt *)hdr);
@@ -581,8 +579,6 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
     dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
     uint8_t type = hdr->pkt_type;
-
-    debug(DBG_LOG, "PC: Received %02X\n", type);
 
     switch(type) {
         case SIMPLE_MAIL_TYPE:
@@ -1339,8 +1335,6 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
     uint16_t flags = ntohs(pkt->flags);
-
-    debug(DBG_LOG, "Receieved type 0x%04X\n", type);
 
     switch(type) {
         case SHDR_TYPE_LOGIN:
