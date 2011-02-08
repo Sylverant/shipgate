@@ -816,14 +816,15 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
     void *result;
     char **row;
     int account_id;
+    int priv, priv2;
 
     req = ntohl(pkt->req_gc);
     target = ntohl(pkt->target);
     until = ntohl(pkt->until);
 
     /* Make sure the requester has permission. */
-    sprintf(query, "SELECT account_id FROM guildcards NATURAL JOIN "
-            "account_data  WHERE guildcard='%u' AND privlevel>'2'", req);
+    sprintf(query, "SELECT account_id, privlevel FROM guildcards NATURAL JOIN "
+            "account_data WHERE guildcard='%u' AND privlevel>'2'", req);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't fetch account data (%u)\n", req);
@@ -852,6 +853,45 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
 
     /* We've verified they're legit, continue on. */
     account_id = atoi(row[0]);
+    priv = atoi(row[1]);
+    sylverant_db_result_free(result);
+
+    /* Make sure the user isn't trying to ban someone with a higher privilege
+       level than them... */
+    sprintf(query, "SELECT privlevel FROM guildcards NATURAL JOIN account_data "
+            "WHERE guildcard='%u'", target);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch account data (%u)\n", target);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR, 
+                          (uint8_t *)&pkt->req_gc, 16);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%u)\n", target);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->req_gc, 16);
+    }
+
+    if((row = sylverant_db_result_fetch(result))) {
+        priv2 = atoi(row[0]);
+
+        if(priv2 >= priv) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Attempt by %u to ban %u overturned by privilege\n",
+                  req, target);
+
+            return send_error(c, type, SHDR_FAILURE, ERR_BAN_PRIVILEGE,
+                              (uint8_t *)&pkt->req_gc, 16);
+        }
+    }
+
+    /* We're done with that... */
     sylverant_db_result_free(result);
 
     /* Build up the ban insert query. */
