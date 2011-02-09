@@ -251,7 +251,7 @@ void run_server(int sock) {
 }
 
 int main(int argc, char *argv[]) {
-    int sock;
+    int sock, val;
     struct sockaddr_in addr;
 
     /* Parse the command line and read our configuration. */
@@ -267,6 +267,15 @@ int main(int argc, char *argv[]) {
         perror("socket");
         sylverant_db_close(&conn);
         return 1;
+    }
+
+    /* Set SO_REUSEADDR so we don't run into issues when we kill the shipgate
+       and bring it back up quickly... */
+    val = 1;
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(int))) {
+        perror("setsockopt");
+        /* We can ignore this error, pretty much... its just a convenience thing
+           anyway... */
     }
 
     addr.sin_family = AF_INET;
