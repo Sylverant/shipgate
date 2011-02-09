@@ -1292,14 +1292,15 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
     void *result;
     char **row;
     ship_t *c2;
+    int priv, priv2;
 
     /* Parse out what we care about */
     gcr = ntohl(pkt->requester);
     gc = ntohl(pkt->guildcard);
 
     /* Make sure the requester is a GM */
-    sprintf(query, "SELECT account_id FROM account_data NATURAL JOIN "
-            "guildcards WHERE privlevel>'1' AND guildcard='%u'", gcr);
+    sprintf(query, "SELECT privlevel FROM account_data NATURAL JOIN guildcards "
+            "WHERE privlevel>'1' AND guildcard='%u'", gcr);
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
         return 0;
@@ -1323,8 +1324,46 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
         return -1;
     }
 
-    /* We're done with the data we got (we didn't really care about it anyway,
-       other than making sure there was SOMETHING) */
+    /* Grab the privilege level of the GM doing the kick */
+    priv = atoi(row[0]);
+
+    /* We're done with the data we got */
+    sylverant_db_result_free(result);
+
+    /* Make sure the user isn't trying to kick someone with a higher privilege
+       level than them... */
+    sprintf(query, "SELECT privlevel FROM guildcards NATURAL JOIN account_data "
+            "WHERE guildcard='%u'", gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch account data (%u)\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return 0;
+    }
+    
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%u)\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return 0;
+    }
+
+    /* See if we got anything */
+    if((row = sylverant_db_result_fetch(result))) {
+        priv2 = atoi(row[0]);
+
+        if(priv2 >= priv) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Attempt by %u to kick %u overturned by priv\n",
+                  gcr, gc);
+
+            return 0;
+        }
+    }
+
+    /* We're done with that... */
     sylverant_db_result_free(result);
 
     /* Now that we're done with that, work on the kick */
