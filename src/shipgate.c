@@ -277,6 +277,8 @@ int main(int argc, char *argv[]) {
     /* Parse the command line and read our configuration. */
     parse_command_line(argc, argv);
 
+    chdir(sylverant_directory);
+
     /* If we're still alive and we're supposed to daemonize, do it now. */
     if(!dont_daemonize) {
         open_log();
@@ -289,8 +291,6 @@ int main(int argc, char *argv[]) {
     }
 
     load_config();
-    
-    chdir(sylverant_directory);
 
     /* Create the socket and listen for connections. */
     sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
