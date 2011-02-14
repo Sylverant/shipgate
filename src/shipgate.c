@@ -40,6 +40,8 @@ struct ship_queue ships = TAILQ_HEAD_INITIALIZER(ships);
 sylverant_config_t cfg;
 sylverant_dbconn_t conn;
 
+static int dont_daemonize = 0;
+
 /* Print information about this program to stdout. */
 static void print_program_info() {
     printf("Sylverant Shipgate version %s\n", VERSION);
@@ -64,6 +66,7 @@ static void print_help(const char *bin) {
            "--verbose       Log many messages that might help debug a problem\n"
            "--quiet         Only log warning and error messages\n"
            "--reallyquiet   Only log error messages\n"
+           "--nodaemon      Don't daemonize\n"
            "--help          Print this help and exit\n\n"
            "Note that if more than one verbosity level is specified, the last\n"
            "one specified will be used. The default is --verbose.\n", bin);
@@ -76,7 +79,7 @@ static void parse_command_line(int argc, char *argv[]) {
     for(i = 1; i < argc; ++i) {
         if(!strcmp(argv[i], "--version")) {
             print_program_info();
-            exit(0);
+            exit(EXIT_SUCCESS);
         }
         else if(!strcmp(argv[i], "--verbose")) {
             debug_set_threshold(DBG_LOG);
@@ -87,14 +90,17 @@ static void parse_command_line(int argc, char *argv[]) {
         else if(!strcmp(argv[i], "--reallyquiet")) {
             debug_set_threshold(DBG_ERROR);
         }
+        else if(!strcmp(argv[i], "--nodaemon")) {
+            dont_daemonize = 1;
+        }
         else if(!strcmp(argv[i], "--help")) {
             print_help(argv[0]);
-            exit(0);
+            exit(EXIT_SUCCESS);
         }
         else {
             printf("Illegal command line argument: %s\n", argv[i]);
             print_help(argv[0]);
-            exit(1);
+            exit(EXIT_FAILURE);
         }
     }
 }
@@ -103,26 +109,26 @@ static void parse_command_line(int argc, char *argv[]) {
 static void load_config() {
     if(sylverant_read_config(&cfg)) {
         printf("Cannot load configuration!\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     debug(DBG_LOG, "Connecting to the database...\n");
 
     if(sylverant_db_open(&cfg.dbcfg, &conn)) {
         debug(DBG_ERROR, "Can't connect to the database\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     debug(DBG_LOG, "Clearing online_ships...\n");
     if(sylverant_db_query(&conn, "DELETE FROM online_ships")) {
         debug(DBG_ERROR, "Error clearing online_ships\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     debug(DBG_LOG, "Clearing online_clients...\n");
     if(sylverant_db_query(&conn, "DELETE FROM online_clients")) {
         debug(DBG_ERROR, "Error clearing online_clients\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -250,12 +256,38 @@ void run_server(int sock) {
     }
 }
 
+static void open_log() {
+    FILE *dbgfp;
+
+    dbgfp = fopen("logs/shipgate_debug.log", "a");
+
+    if(!dbgfp) {
+        debug(DBG_ERROR, "Cannot open log file\n");
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+
+    debug_set_file(dbgfp);
+}
+
 int main(int argc, char *argv[]) {
     int sock, val;
     struct sockaddr_in addr;
 
     /* Parse the command line and read our configuration. */
     parse_command_line(argc, argv);
+
+    /* If we're still alive and we're supposed to daemonize, do it now. */
+    if(!dont_daemonize) {
+        open_log();
+
+        if(daemon(1, 0)) {
+            debug(DBG_ERROR, "Cannot daemonize\n");
+            perror("daemon");
+            exit(EXIT_FAILURE);
+        }
+    }
+
     load_config();
     
     chdir(sylverant_directory);
