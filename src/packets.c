@@ -200,6 +200,7 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
     pkt->clients = htons(o->clients);
     pkt->games = htons(o->games);
     pkt->menu_code = htons(o->menu_code);
+    pkt->ship_number = (uint8_t)o->ship_number;
 
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_ship_status_pkt));

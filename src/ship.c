@@ -238,6 +238,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     c->flags = ntohl(pkt->flags);
     c->menu_code = menu_code;
     strcpy(c->name, pkt->name);
+    c->ship_number = ship_number;
 
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
             "ship_id, gm_only, games, menu_code, flags, ship_number) VALUES "

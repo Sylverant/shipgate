@@ -60,6 +60,7 @@ typedef struct ship {
     uint16_t games;
     uint16_t menu_code;
 
+    int ship_number;
     uint8_t ship_nonce[4];
     uint8_t gate_nonce[4];
     time_t last_message;
