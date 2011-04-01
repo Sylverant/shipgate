@@ -153,6 +153,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     char **row;
     uint32_t pver = c->proto_ver = ntohl(pkt->proto_ver);
     uint16_t menu_code = ntohs(pkt->menu_code);
+    int ship_number;
 
     /* Check the protocol version for support */
     if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
@@ -164,7 +165,8 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     }
 
     /* Attempt to grab the key for this ship. */
-    sprintf(query, "SELECT rc4key, main_menu FROM ship_data WHERE idx='%u'", k);
+    sprintf(query, "SELECT rc4key, main_menu, ship_number FROM ship_data WHERE "
+            "idx='%u'", k);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't query the database\n");
@@ -200,6 +202,7 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
 
     /* Grab the key from the result */
     memcpy(key, row[0], 128);
+    ship_number = atoi(row[2]);
     sylverant_db_result_free(result);
 
     /* Apply the nonces */
@@ -237,11 +240,11 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     strcpy(c->name, pkt->name);
 
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
-            "ship_id, gm_only, games, menu_code, flags) VALUES ('%s', '%hu',"
-            "'%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u')", c->name,
-            c->clients, ntohl(c->remote_addr), c->port, ntohl(c->local_addr),
-            c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY), c->games,
-            c->menu_code, c->flags);
+            "ship_id, gm_only, games, menu_code, flags, ship_number) VALUES "
+            "('%s', '%hu', '%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u', "
+            "'%d')", c->name, c->clients, ntohl(c->remote_addr), c->port,
+            ntohl(c->local_addr), c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY),
+            c->games, c->menu_code, c->flags, ship_number);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
