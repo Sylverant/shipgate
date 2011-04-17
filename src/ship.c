@@ -1414,6 +1414,128 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
     return 0;
 }
 
+static int handle_frlist_req(ship_t *c, shipgate_friend_list_req *pkt) {
+    uint32_t gcr, block, start;
+    char query[256];
+    void *result;
+    char **row;
+    friendlist_data_t entries[5];
+    int i;
+
+    /* Parse out what we need */
+    gcr = ntohl(pkt->requester);
+    block = ntohl(pkt->block);
+    start = ntohl(pkt->start);
+
+    /* Grab the friendlist data */
+    sprintf(query, "SELECT friend, nickname, ship_id, block FROM friendlist "
+            "LEFT OUTER JOIN online_clients ON friendlist.friend = "
+            "online_clients.guildcard WHERE owner='%u' ORDER BY friend "
+            "LIMIT 5 OFFSET %u", gcr, start);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't select friendlist for %u\n", gcr);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data from the DB */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch friendlist for %u\n", gcr);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return 0;
+    }
+
+    /* Fetch our max of 5 entries... i will be left as the number found */
+    for(i = 0; i < 5 && (row = sylverant_db_result_fetch(result)); ++i) {
+        entries[i].guildcard = htonl(strtoul(row[0], NULL, 0));
+        
+        if(row[2]) {
+            entries[i].ship = htonl(strtoul(row[2], NULL, 0));
+        }
+        else {
+            entries[i].ship = 0;
+        }
+
+        if(row[3]) {
+            entries[i].block = htonl(strtoul(row[3], NULL, 0));
+        }
+        else {
+            entries[i].block = 0;
+        }
+
+        entries[i].reserved = 0;
+
+        strncpy(entries[i].name, row[1], 31);
+        entries[i].name[31] = 0;
+    }
+
+    /* We're done with that, so clean up */
+    sylverant_db_result_free(result);
+
+    /* Send the packet to the user */
+    send_friendlist(c, gcr, block, i, entries);
+
+    return 0;
+}
+
+static int handle_globalmsg(ship_t *c, shipgate_global_msg_pkt *pkt) {
+    uint32_t gcr;
+    uint16_t text_len;
+    char query[256];
+    void *result;
+    char **row;
+    ship_t *i;
+
+    /* Parse out what we really need */
+    gcr = ntohl(pkt->requester);
+    text_len = ntohs(pkt->hdr.pkt_len) - sizeof(shipgate_global_msg_pkt);
+
+    /* Make sure the string is NUL terminated */
+    if(pkt->text[text_len - 1]) {
+        debug(DBG_WARN, "Non-terminated global msg (%hu)\n", c->key_idx);
+        return 0;
+    }
+
+    /* Make sure the requester is a GM */
+    sprintf(query, "SELECT privlevel FROM account_data NATURAL JOIN guildcards "
+            "WHERE privlevel>'1' AND guildcard='%u'", gcr);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data from the DB */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch GM data (%u)\n", gcr);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return 0;
+    }
+
+    /* Make sure we actually have a row, if not the ship is possibly trying to
+       trick us into giving someone without GM privileges GM abilities... */
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "Failed global msg - not gm (gc: %u ship: %hu)\n", gcr,
+              c->key_idx);
+
+        return -1;
+    }
+
+    /* We're done with that... */
+    sylverant_db_result_free(result);
+
+    /* Send the packet along to all the ships that support it */
+    TAILQ_FOREACH(i, &ships, qentry) {
+        if(send_global_msg(i, gcr, pkt->text, text_len)) {
+            i->disconnected = 1;
+        }
+    }
+
+    return 0;
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -1477,6 +1599,12 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_KICK:
             return handle_kick(c, (shipgate_kick_pkt *)pkt);
+
+        case SHDR_TYPE_FRLIST:
+            return handle_frlist_req(c, (shipgate_friend_list_req *)pkt);
+
+        case SHDR_TYPE_GLOBALMSG:
+            return handle_globalmsg(c, (shipgate_global_msg_pkt *)pkt);
 
         default:
             return -3;

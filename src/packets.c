@@ -399,3 +399,56 @@ int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_kick_pkt));
 }
+
+/* Send a portion of a user's friendlist to the user */
+int send_friendlist(ship_t *c, uint32_t requester, uint32_t block,
+                    int count, friendlist_data_t *entries) {
+    shipgate_friend_list_pkt *pkt = (shipgate_friend_list_pkt *)sendbuf;
+    uint16_t len = sizeof(shipgate_friend_list_pkt) +
+        sizeof(friendlist_data_t) * count;
+
+    /* This appeared in v5, so don't send it to earlier version ships */
+    if(c->proto_ver < 5) {
+        return 0;
+    }
+
+    /* Fill in the packet */
+    pkt->hdr.pkt_len = htons(len);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_FRLIST);
+    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
+
+    pkt->requester = htonl(requester);
+    pkt->block = htonl(block);
+
+    /* Copy the friend data */
+    memcpy(pkt->entries, entries, sizeof(friendlist_data_t) * count);
+
+    /* Send the packet away */
+    return send_crypt(c, len);
+}
+
+/* Send a global message packet to a ship */
+int send_global_msg(ship_t *c, uint32_t requester, const char *text,
+                    uint16_t text_len) {
+    shipgate_global_msg_pkt *pkt = (shipgate_global_msg_pkt *)sendbuf;
+    uint16_t len = sizeof(shipgate_global_msg_pkt) + text_len;
+
+    /* This appeared in v5, so don't send it to earlier version ships */
+    if(c->proto_ver < 5) {
+        return 0;
+    }
+
+    /* Fill in the packet */
+    pkt->hdr.pkt_len = htons(len);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_GLOBALMSG);
+    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    pkt->requester = htonl(requester);
+    pkt->reserved = 0;
+    memcpy(pkt->text, text, len);
+
+    /* Send the packet away */
+    return send_crypt(c, len);
+}

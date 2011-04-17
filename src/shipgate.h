@@ -25,7 +25,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 4
+#define SHIPGATE_MAXIMUM_PROTO_VER 5
 
 #ifdef PACKED
 #undef PACKED
@@ -250,6 +250,32 @@ typedef struct shipgate_kick_req {
     char reason[64];
 } PACKED shipgate_kick_pkt;
 
+/* Packet to send a portion of the user's friend list to the ship, including
+   online/offline status. */
+typedef struct shipgate_friend_list {
+    shipgate_hdr_t hdr;
+    uint32_t requester;
+    uint32_t block;
+    friendlist_data_t entries[];
+} PACKED shipgate_friend_list_pkt;
+
+/* Packet to request a portion of the friend list be sent */
+typedef struct shipgate_friend_list_req {
+    shipgate_hdr_t hdr;
+    uint32_t requester;
+    uint32_t block;
+    uint32_t start;
+    uint32_t reserved;
+} PACKED shipgate_friend_list_req;
+
+/* Packet to send a global message to all ships */
+typedef struct shipgate_global_msg {
+    shipgate_hdr_t hdr;
+    uint32_t requester;
+    uint32_t reserved;
+    char text[];                        /* UTF-8, padded to 8-byte boundary */
+} PACKED shipgate_global_msg_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -284,6 +310,8 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_LOBBYCHG  0x001F      /* A user changes lobbies */
 #define SHDR_TYPE_BCLIENTS  0x0020      /* A bulk transfer of client info */
 #define SHDR_TYPE_KICK      0x0021      /* A kick request */
+#define SHDR_TYPE_FRLIST    0x0022      /* Friend list request/reply */
+#define SHDR_TYPE_GLOBALMSG 0x0023      /* A Global message packet */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -292,6 +320,7 @@ static const char shipgate_login_msg[] =
 #define LOGIN_FLAG_NOV2     0x00000020  /* Do not allow DCv2 clients */
 #define LOGIN_FLAG_NOPC     0x00000040  /* Do not allow PSOPC clients */
 #define LOGIN_FLAG_NOEP12   0x00000080  /* Do not allow PSO Ep1&2 clients */
+#define LOGIN_FLAG_NOEP3    0x00000100  /* Do not allow PSO Ep3 clients */
 
 /* General error codes */
 #define ERR_NO_ERROR            0x00000000
@@ -359,5 +388,13 @@ int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
 /* Send a kick packet */
 int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
               const char *reason);
+
+/* Send a portion of a user's friendlist to the user */
+int send_friendlist(ship_t *c, uint32_t requester, uint32_t block,
+                    int count, friendlist_data_t *entries);
+
+/* Send a global message packet to a ship */
+int send_global_msg(ship_t *c, uint32_t requester, const char *text,
+                    uint16_t len);
 
 #endif /* !SHIPGATE_H */

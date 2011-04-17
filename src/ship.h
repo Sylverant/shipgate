@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009 Lawrence Sebald
+    Copyright (C) 2009, 2011 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -38,6 +38,15 @@ typedef struct shipgate_hdr {
     uint16_t pkt_unc_len;               /* Uncompressed length */
     uint16_t flags;                     /* Packet flags */
 } PACKED shipgate_hdr_t;
+
+/* This is used for storing the friendlist data for a friend list request. */
+typedef struct friendlist_data {
+    uint32_t guildcard;
+    uint32_t ship;
+    uint32_t block;
+    uint32_t reserved;
+    char name[32];
+} PACKED friendlist_data_t;
 
 #undef PACKED
 
