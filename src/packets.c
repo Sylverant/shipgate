@@ -289,7 +289,7 @@ int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games) {
 
 /* Send an error packet to a ship */
 int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
-               uint8_t *data, int data_sz) {
+               const uint8_t *data, int data_sz) {
     shipgate_error_pkt *pkt = (shipgate_error_pkt *)sendbuf;
     uint16_t sz;
 
@@ -402,7 +402,7 @@ int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
 
 /* Send a portion of a user's friendlist to the user */
 int send_friendlist(ship_t *c, uint32_t requester, uint32_t block,
-                    int count, friendlist_data_t *entries) {
+                    int count, const friendlist_data_t *entries) {
     shipgate_friend_list_pkt *pkt = (shipgate_friend_list_pkt *)sendbuf;
     uint16_t len = sizeof(shipgate_friend_list_pkt) +
         sizeof(friendlist_data_t) * count;
@@ -450,5 +450,71 @@ int send_global_msg(ship_t *c, uint32_t requester, const char *text,
     memcpy(pkt->text, text, len);
 
     /* Send the packet away */
+    return send_crypt(c, len);
+}
+
+/* Begin an options packet */
+void *user_options_begin(uint32_t guildcard, uint32_t block) {
+    shipgate_user_opt_pkt *pkt = (shipgate_user_opt_pkt *)sendbuf;
+
+    /* Fill in the packet */
+    pkt->hdr.pkt_len = sizeof(shipgate_user_opt_pkt);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_USEROPT);
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    pkt->guildcard = htonl(guildcard);
+    pkt->block = htonl(block);
+    pkt->count = 0;
+    pkt->reserved = 0;
+
+    /* Return the pointer to the end of the buffer */
+    return &pkt->options[0];
+}
+
+/* Append an option value to the options packet */
+void *user_options_append(void *p, uint32_t opt, uint32_t len,
+                          const uint8_t *data) {
+    shipgate_user_opt_pkt *pkt = (shipgate_user_opt_pkt *)sendbuf;
+    shipgate_user_opt_t *o = (shipgate_user_opt_t *)p;
+    int padding = 8 - (len & 7);
+
+    /* Add the new option in */
+    o->option = htonl(opt);
+    memcpy(o->data, data, len);
+
+    /* Options must be a multiple of 8 bytes in length */
+    while(padding--) {
+        o->data[len++] = 0;
+    }
+
+    o->length = htonl(len + 8);
+
+    /* Adjust the packet's information to account for the new option */
+    pkt->hdr.pkt_len += len + 8;
+    ++pkt->count;
+
+    return (((uint8_t *)p) + len + 8);
+}
+
+/* Finish off a user options packet and send it along */
+int send_user_options(ship_t *c) {
+    shipgate_user_opt_pkt *pkt = (shipgate_user_opt_pkt *)sendbuf;
+    uint16_t len = pkt->hdr.pkt_len;
+
+    /* This appeared in v6, so don't send it to earlier version ships */
+    if(c->proto_ver < 6) {
+        return 0;
+    }
+
+    /* Make sure we have something to send, at least */
+    if(!pkt->count) {
+        return 0;
+    }
+
+    /* Swap that which we need to do */
+    pkt->hdr.pkt_len = htons(len);
+    pkt->count = htonl(pkt->count);
+
+    /* Send it away */
     return send_crypt(c, len);
 }

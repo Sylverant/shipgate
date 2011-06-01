@@ -25,7 +25,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 5
+#define SHIPGATE_MAXIMUM_PROTO_VER 6
 
 #ifdef PACKED
 #undef PACKED
@@ -276,6 +276,23 @@ typedef struct shipgate_global_msg {
     char text[];                        /* UTF-8, padded to 8-byte boundary */
 } PACKED shipgate_global_msg_pkt;
 
+/* An individual option for the options packet */
+typedef struct shipgate_user_opt {
+    uint32_t option;
+    uint32_t length;
+    uint8_t data[];
+} PACKED shipgate_user_opt_t;
+
+/* Packet used to send a user's settings to a ship */
+typedef struct shipgate_user_options {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t block;
+    uint32_t count;
+    uint32_t reserved;
+    shipgate_user_opt_t options[];
+} PACKED shipgate_user_opt_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -312,6 +329,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_KICK      0x0021      /* A kick request */
 #define SHDR_TYPE_FRLIST    0x0022      /* Friend list request/reply */
 #define SHDR_TYPE_GLOBALMSG 0x0023      /* A Global message packet */
+#define SHDR_TYPE_USEROPT   0x0024      /* A user's options -- sent on login */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -351,6 +369,9 @@ static const char shipgate_login_msg[] =
 #define ERR_BLOGIN_INVAL_NAME   0x00000001
 #define ERR_BLOGIN_ONLINE       0x00000002
 
+/* Possible values for user options */
+#define USER_OPT_QUEST_LANG     0x00000001
+
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
 
@@ -377,7 +398,7 @@ int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games);
 
 /* Send an error packet to a ship */
 int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
-               uint8_t *data, int data_sz);
+               const uint8_t *data, int data_sz);
 
 /* Send a packet to tell a client that a friend has logged on or off */
 int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
@@ -391,10 +412,20 @@ int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
 
 /* Send a portion of a user's friendlist to the user */
 int send_friendlist(ship_t *c, uint32_t requester, uint32_t block,
-                    int count, friendlist_data_t *entries);
+                    int count, const friendlist_data_t *entries);
 
 /* Send a global message packet to a ship */
 int send_global_msg(ship_t *c, uint32_t requester, const char *text,
                     uint16_t len);
+
+/* Begin an options packet */
+void *user_options_begin(uint32_t guildcard, uint32_t block);
+
+/* Append an option value to the options packet */
+void *user_options_append(void *p, uint32_t opt, uint32_t len,
+                          const uint8_t *data);
+
+/* Finish off a user options packet and send it along */
+int send_user_options(ship_t *c);
 
 #endif /* !SHIPGATE_H */

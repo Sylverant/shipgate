@@ -946,11 +946,13 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
 static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     char query[512];
     char tmp[128];
-    uint32_t gc, bl, gc2, bl2;
+    uint32_t gc, bl, gc2, bl2, opt;
     uint16_t ship_id;
     ship_t *c2;
     void *result;
     char **row;
+    void *optpkt;
+    unsigned long *lengths;
 
     /* Packet introduced in protocol version 2. Error to send in v1. */
     if(c->proto_ver < 2) {
@@ -1015,6 +1017,46 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     }
 
     sylverant_db_result_free(result);
+
+    /* User options first appeared in protocol version 6, so only do this if the
+       ship is at least of that version. */
+    if(c->proto_ver >= 6) {
+        /* See what options we have to deliver to the user */
+        sprintf(query, "SELECT opt, value FROM user_options WHERE "
+                "guildcard='%u'", gc);
+
+        /* Query for any results */
+        if(sylverant_db_query(&conn, query)) {
+            /* Silently fail here (to the ship anyway), since this doesn't spell
+               doom at all for the logged in user (although, it might spell some
+               inconvenience, potentially) */
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+            return 0;
+        }
+
+        /* Grab any results we got */
+        if(!(result = sylverant_db_result_store(&conn))) {
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+            return 0;
+        }
+
+        /* Begin the options packet */
+        optpkt = user_options_begin(gc, bl);
+
+        /* Loop through each option to add it to the packet */
+        while((row = sylverant_db_result_fetch(result))) {
+            lengths = sylverant_db_result_lengths(result);
+            opt = (uint32_t)strtoul(row[0], NULL, 0);
+
+            optpkt = user_options_append(optpkt, opt, (uint32_t)lengths[1],
+                                         (uint8_t *)row[1]);
+        }
+
+        sylverant_db_result_free(result);
+
+        /* We're done, send it */
+        send_user_options(c);
+    }
 
     /* We're done (no need to tell the ship on success) */
     return 0;
@@ -1536,6 +1578,72 @@ static int handle_globalmsg(ship_t *c, shipgate_global_msg_pkt *pkt) {
     return 0;
 }
 
+static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
+    char data[512];
+    char query[1024];
+    uint16_t len = htons(pkt->hdr.pkt_len);
+    uint32_t ugc, optlen, opttype;
+    int realoptlen;
+
+    /* Packet introduced in protocol version 6. */
+    if(c->proto_ver < 6) {
+        return -1;
+    }
+
+    /* Make sure the length is sane */
+    if(len < sizeof(shipgate_user_opt_pkt) + 16) {
+        return -2;
+    }
+
+    /* Parse out the guildcard */
+    ugc = ntohl(pkt->guildcard);
+    optlen = ntohl(pkt->options[0].length);
+    opttype = ntohl(pkt->options[0].option);
+
+    /* Make sure the length matches up properly */
+    if(optlen != len - sizeof(shipgate_user_opt_pkt)) {
+        return -3;
+    }
+
+    /* Handle each option separately */
+    switch(opttype) {
+        case USER_OPT_QUEST_LANG:
+            /* The full option should be 16 bytes */
+            if(optlen != 16) {
+                return -4;
+            }
+
+            /* However, we only pay attention to the first byte */
+            realoptlen = 1;
+            break;
+
+        default:
+            debug(DBG_WARN, "Ship sent unknown user option: %lu\n", opttype);
+            return -5;
+    }
+
+    /* Escape the data */
+    sylverant_db_escape_str(&conn, data, (const char *)pkt->options[0].data,
+                            realoptlen);
+
+    /* Build the db query... This uses a MySQL extension, so will have to be
+       fixed if any other DB type is to be supported... */
+    sprintf(query, "INSERT INTO user_options(guildcard, opt, value) "
+            "VALUES('%u', '%u', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", ugc, opttype, data);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_USEROPT, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 24);
+    }
+
+    /* Return success to the ship */
+    return send_error(c, SHDR_TYPE_USEROPT, SHDR_RESPONSE, ERR_NO_ERROR,
+                      (uint8_t *)&pkt->guildcard, 24);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -1605,6 +1713,9 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_GLOBALMSG:
             return handle_globalmsg(c, (shipgate_global_msg_pkt *)pkt);
+
+        case SHDR_TYPE_USEROPT:
+            return handle_useropt(c, (shipgate_user_opt_pkt *)pkt);
 
         default:
             return -3;
