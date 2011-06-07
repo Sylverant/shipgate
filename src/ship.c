@@ -230,7 +230,6 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     RC4_set_key(&c->ship_key, 64, hash);
 
     c->remote_addr = pkt->ship_addr;
-    c->local_addr = pkt->int_addr;
     c->port = ntohs(pkt->ship_port);
     c->key_idx = k;
     c->clients = ntohs(pkt->clients);
@@ -243,9 +242,9 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
             "ship_id, gm_only, games, menu_code, flags, ship_number) VALUES "
             "('%s', '%hu', '%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u', "
-            "'%d')", c->name, c->clients, ntohl(c->remote_addr), c->port,
-            ntohl(c->local_addr), c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY),
-            c->games, c->menu_code, c->flags, ship_number);
+            "'%d')", c->name, c->clients, ntohl(c->remote_addr), c->port, 0,
+            c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY), c->games,
+            c->menu_code, c->flags, ship_number);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
@@ -428,13 +427,13 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     void *result;
     char **row;
     uint16_t ship_id, port;
-    uint32_t lobby_id, ip, int_ip, block;
+    uint32_t lobby_id, ip, block;
     ship_t *s;
     dc_guild_reply_pkt reply;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
-            "lobby, lobby_id, online_ships.name, ip, port, int_ip, gm_only "
+            "lobby, lobby_id, online_ships.name, ip, port, gm_only "
             "FROM online_clients INNER JOIN online_ships ON "
             "online_clients.ship_id = online_ships.ship_id WHERE "
             "guildcard='%u'", guildcard);
@@ -501,7 +500,6 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     block = (uint32_t)strtoul(row[2], NULL, 0);
     lobby_id = (uint32_t)strtoul(row[4], NULL, 0);
     ip = (uint32_t)strtoul(row[6], NULL, 0);
-    int_ip = (uint32_t)strtoul(row[8], NULL, 0);
 
     if(errno) {
         debug(DBG_WARN, "Error parsing in guild search: %s", strerror(errno));
