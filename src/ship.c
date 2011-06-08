@@ -58,8 +58,28 @@ static ship_t *find_ship(uint16_t id) {
     return NULL;
 }
 
+static inline void pack_ipv6(struct in6_addr *addr, uint64_t *hi,
+                             uint64_t *lo) {
+    *hi = ((uint64_t)addr->s6_addr[0] << 56) |
+        ((uint64_t)addr->s6_addr[1] << 48) |
+        ((uint64_t)addr->s6_addr[2] << 40) |
+        ((uint64_t)addr->s6_addr[3] << 32) |
+        ((uint64_t)addr->s6_addr[4] << 24) |
+        ((uint64_t)addr->s6_addr[5] << 16) |
+        ((uint64_t)addr->s6_addr[6] << 8) |
+        ((uint64_t)addr->s6_addr[7]);
+    *lo = ((uint64_t)addr->s6_addr[8] << 56) |
+        ((uint64_t)addr->s6_addr[9] << 48) |
+        ((uint64_t)addr->s6_addr[10] << 40) |
+        ((uint64_t)addr->s6_addr[11] << 32) |
+        ((uint64_t)addr->s6_addr[12] << 24) |
+        ((uint64_t)addr->s6_addr[13] << 16) |
+        ((uint64_t)addr->s6_addr[14] << 8) |
+        ((uint64_t)addr->s6_addr[15]);
+}
+
 /* Create a new connection, storing it in the list of ships. */
-ship_t *create_connection(int sock, in_addr_t addr) {
+ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size) {
     ship_t *rv;
     uint32_t i;
 
@@ -74,8 +94,8 @@ ship_t *create_connection(int sock, in_addr_t addr) {
 
     /* Store basic parameters in the client structure. */
     rv->sock = sock;
-    rv->conn_addr = addr;
     rv->last_message = time(NULL);
+    memcpy(&rv->conn_addr, addr, size);
 
     for(i = 0; i < 4; ++i) {
         rv->ship_nonce[i] = (uint8_t)genrand_int32();
@@ -155,9 +175,9 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     uint16_t menu_code = ntohs(pkt->menu_code);
     int ship_number;
 
-    /* Check the protocol version for support */
-    if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
-        debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
+    /* Check the protocol version for support (packet dropped in v7) */
+    if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > 6) {
+        debug(DBG_WARN, "Invalid protocol version (old login): %lu\n", pver);
 
         send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
                    ERR_LOGIN_BAD_PROTO, NULL, 0);
@@ -277,6 +297,148 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
 
     return 0;
 }
+
+/* Handle a ship's login response (with IPv6 support!). */
+static int handle_shipgate_login6(ship_t *c, shipgate_login6_reply_pkt *pkt) {
+    char query[256];
+    ship_t *j;
+    uint8_t key[128], hash[64];
+    int k = ntohs(pkt->ship_key), i;
+    void *result;
+    char **row;
+    uint32_t pver = c->proto_ver = ntohl(pkt->proto_ver);
+    uint16_t menu_code = ntohs(pkt->menu_code);
+    int ship_number;
+    uint64_t ip6_hi, ip6_lo;
+
+    /* Check the protocol version for support (first supported in v7) */
+    if(pver < 7 || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
+        debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
+
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_PROTO, NULL, 0);
+        return -1;
+    }
+
+    /* Attempt to grab the key for this ship. */
+    sprintf(query, "SELECT rc4key, main_menu, ship_number FROM ship_data WHERE "
+            "idx='%u'", k);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query the database\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, NULL, 0);
+        return -1;
+    }
+
+    if((result = sylverant_db_result_store(&conn)) == NULL ||
+       (row = sylverant_db_result_fetch(result)) == NULL) {
+        debug(DBG_WARN, "Invalid index %d\n", k);
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_KEY, NULL, 0);
+        return -1;
+    }
+
+    /* Check the menu code for validity */
+    if(menu_code && (!isalpha(menu_code & 0xFF) | !isalpha(menu_code >> 8))) {
+        debug(DBG_WARN, "Bad menu code for id: %d\n", k);
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_MENU, NULL, 0);
+        return -1;
+    }
+
+    /* If the ship requests the main menu and they aren't allowed there, bail */
+    if(!menu_code && !atoi(row[1])) {
+        debug(DBG_WARN, "Invalid menu code for id: %d\n", k);
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_INVAL_MENU, NULL, 0);
+        return -1;
+    }
+
+    /* Grab the key from the result */
+    memcpy(key, row[0], 128);
+    ship_number = atoi(row[2]);
+    sylverant_db_result_free(result);
+
+    /* Apply the nonces */
+    for(i = 0; i < 128; i += 4) {
+        key[i + 0] ^= c->gate_nonce[0];
+        key[i + 1] ^= c->gate_nonce[1];
+        key[i + 2] ^= c->gate_nonce[2];
+        key[i + 3] ^= c->gate_nonce[3];
+    }
+
+    /* Hash the key with SHA-512, and use that as our final key. */
+    SHA512(key, 128, hash);
+    RC4_set_key(&c->gate_key, 64, hash);
+
+    /* Calculate the final ship key. */
+    for(i = 0; i < 128; i += 4) {
+        key[i + 0] ^= c->ship_nonce[0];
+        key[i + 1] ^= c->ship_nonce[1];
+        key[i + 2] ^= c->ship_nonce[2];
+        key[i + 3] ^= c->ship_nonce[3];
+    }
+
+    /* Hash the key with SHA-512, and use that as our final key. */
+    SHA512(key, 128, hash);
+    RC4_set_key(&c->ship_key, 64, hash);
+
+    c->remote_addr = pkt->ship_addr4;
+    memcpy(&c->remote_addr6, pkt->ship_addr6, 16);
+    c->port = ntohs(pkt->ship_port);
+    c->key_idx = k;
+    c->clients = ntohs(pkt->clients);
+    c->games = ntohs(pkt->games);
+    c->flags = ntohl(pkt->flags);
+    c->menu_code = menu_code;
+    memcpy(c->name, pkt->name, 12);
+    c->ship_number = ship_number;
+
+    pack_ipv6(&c->remote_addr6, &ip6_hi, &ip6_lo);
+
+    sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
+            "ship_id, gm_only, games, menu_code, flags, ship_number, "
+            "ship_ip6_high, ship_ip6_low) VALUES ('%s', '%hu', '%u', '%hu', "
+            "'%u', '%u', '%d', '%hu', '%hu', '%u', '%d', '%llu', '%llu')",
+            c->name, c->clients, ntohl(c->remote_addr), c->port, 0, c->key_idx,
+            !!(c->flags & LOGIN_FLAG_GMONLY), c->games, c->menu_code, c->flags,
+            ship_number, (unsigned long long)ip6_hi,
+            (unsigned long long) ip6_lo);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
+              c->name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        c->key_set = 0;
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, NULL, 0);
+        return -1;
+    }
+
+    /* Hooray for misusing functions! */
+    if(send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
+        return -1;
+    }
+    else {
+        c->key_set = 1;
+    }
+
+    /* Send a status packet to each of the ships. */
+    TAILQ_FOREACH(j, &ships, qentry) {
+        send_ship_status(j, c, 1);
+
+        /* Send this ship to the new ship, as long as that wasn't done just
+           above here. */
+        if(j != c) {
+            send_ship_status(c, j, 1);
+        }
+    }
+
+    return 0;
+}
+
 
 /* Handle a ship's update counters packet. */
 static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
@@ -1655,6 +1817,14 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             }
 
             return handle_shipgate_login(c, (shipgate_login_reply_pkt *)pkt);
+
+        case SHDR_TYPE_LOGIN6:
+            if(!(flags & SHDR_RESPONSE)) {
+                debug(DBG_WARN, "Client sent invalid login response\n");
+                return -1;
+            }
+
+            return handle_shipgate_login6(c, (shipgate_login6_reply_pkt *)pkt);
 
         case SHDR_TYPE_COUNT:
             return handle_count(c, (shipgate_cnt_pkt *)pkt);

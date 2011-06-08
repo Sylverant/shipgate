@@ -132,9 +132,10 @@ static void load_config() {
     }
 }
 
-void run_server(int sock) {
+void run_server(int sock, int sock6) {
     int nfds;
     struct sockaddr_in addr;
+    struct sockaddr_in6 addr6;
     int asock;
     socklen_t len;
     struct timeval timeout;
@@ -142,6 +143,7 @@ void run_server(int sock) {
     ship_t *i, *tmp;
     ssize_t sent;
     time_t now;
+    char ipstr[INET6_ADDRSTRLEN];
 
     for(;;) {
         /* Clear the fd_sets so we can use them. */
@@ -179,9 +181,16 @@ void run_server(int sock) {
             i = tmp;
         }
 
-        /* Add the main listening socket to the read fd_set */
-        FD_SET(sock, &readfds);
-        nfds = nfds > sock ? nfds : sock;
+        /* Add the main listening sockets to the read fd_set */
+        if(sock > -1) {
+            FD_SET(sock, &readfds);
+            nfds = nfds > sock ? nfds : sock;
+        }
+
+        if(sock6 > -1) {
+            FD_SET(sock6, &readfds);
+            nfds = nfds > sock6 ? nfds : sock6;
+        }
 
         if(select(nfds + 1, &readfds, &writefds, NULL, &timeout) > 0) {
             /* Check each ship's socket for activity. */
@@ -238,19 +247,50 @@ void run_server(int sock) {
             }
 
             /* Check the listening port to see if we have a ship. */
-            if(FD_ISSET(sock, &readfds)) {
+            if(sock > -1 && FD_ISSET(sock, &readfds)) {
                 len = sizeof(struct sockaddr_in);
 
                 if((asock = accept(sock, (struct sockaddr *)&addr, &len)) < 0) {
                     perror("accept");
+                    continue;
                 }
 
-                debug(DBG_LOG, "Accepted ship connection from %s\n",
-                      inet_ntoa(addr.sin_addr));
-
-                if(create_connection(asock, addr.sin_addr.s_addr) == NULL) {
+                if(!create_connection(asock, (struct sockaddr *)&addr, len)) {
                     close(asock);
+                    continue;
                 }
+
+                if(!inet_ntop(AF_INET, &addr.sin_addr, ipstr,
+                              INET6_ADDRSTRLEN)) {
+                    perror("inet_ntop");
+                    continue;
+                }
+
+                debug(DBG_LOG, "Accepted ship connection from %s\n", ipstr);
+            }
+
+            /* If we have IPv6 support, check it too */
+            if(sock6 > -1 && FD_ISSET(sock6, &readfds)) {
+                len = sizeof(struct sockaddr_in6);
+
+                if((asock = accept(sock6, (struct sockaddr *)&addr6,
+                                   &len)) < 0) {
+                    perror("accept");
+                    continue;
+                }
+
+                if(!create_connection(asock, (struct sockaddr *)&addr6, len)) {
+                    close(asock);
+                    continue;
+                }
+
+                if(!inet_ntop(AF_INET6, &addr6.sin6_addr, ipstr,
+                              INET6_ADDRSTRLEN)) {
+                    perror("inet_ntop");
+                    continue;
+                }
+
+                debug(DBG_LOG, "Accepted ship connection from %s\n", ipstr);
             }
         }
     }
@@ -270,9 +310,84 @@ static void open_log() {
     debug_set_file(dbgfp);
 }
 
-int main(int argc, char *argv[]) {
+static int open_sock(int family) {
     int sock, val;
     struct sockaddr_in addr;
+    struct sockaddr_in6 addr6;
+
+    sock = socket(family, SOCK_STREAM, IPPROTO_TCP);
+
+    if(sock < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    /* Set SO_REUSEADDR so we don't run into issues when we kill the shipgate
+       and bring it back up quickly... */
+    val = 1;
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(int))) {
+        perror("setsockopt SO_REUSEADDR");
+        /* We can ignore this error, pretty much... its just a convenience thing
+           anyway... */
+    }
+
+    if(family == PF_INET) {
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(3455);
+        memset(addr.sin_zero, 0, 8);
+        
+        if(bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in))) {
+            perror("bind");
+            close(sock);
+            return -1;
+        }
+        
+        if(listen(sock, 10)) {
+            perror("listen");
+            close(sock);
+            return -1;
+        }
+    }
+    else if(family == PF_INET6) {
+        /* Since we create separate sockets for IPv4 and IPv6, make this one
+           support ONLY IPv6. */
+        val = 1;
+        if(setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &val, sizeof(int))) {
+            perror("setsockopt IPV6_V6ONLY");
+            close(sock);
+            return -1;
+        }
+
+        memset(&addr6, 0, sizeof(struct sockaddr_in6));
+
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_addr = in6addr_any;
+        addr6.sin6_port = htons(3455);
+
+        if(bind(sock, (struct sockaddr *)&addr6, sizeof(struct sockaddr_in6))) {
+            perror("bind");
+            close(sock);
+            return -1;
+        }
+
+        if(listen(sock, 10)) {
+            perror("listen");
+            close(sock);
+            return -1;
+        }
+    }
+    else {
+        debug(DBG_ERROR, "Unknown socket family\n");
+        close(sock);
+        return -1;
+    }
+
+    return sock;
+}
+
+int main(int argc, char *argv[]) {
+    int sock, sock6;
 
     /* Parse the command line and read our configuration. */
     parse_command_line(argc, argv);
@@ -293,44 +408,17 @@ int main(int argc, char *argv[]) {
     load_config();
 
     /* Create the socket and listen for connections. */
-    sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sock = open_sock(PF_INET);
+    sock6 = open_sock(PF_INET6);
 
-    if(sock < 0) {
-        perror("socket");
+    if(sock == -1 && sock6 == -1) {
+        debug(DBG_ERROR, "Couldn't create IPv4 or IPv6 socket!\n");
         sylverant_db_close(&conn);
-        return 1;
-    }
-
-    /* Set SO_REUSEADDR so we don't run into issues when we kill the shipgate
-       and bring it back up quickly... */
-    val = 1;
-    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(int))) {
-        perror("setsockopt");
-        /* We can ignore this error, pretty much... its just a convenience thing
-           anyway... */
-    }
-
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(3455);
-    memset(addr.sin_zero, 0, 8);
-
-    if(bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in))) {
-        perror("bind");
-        sylverant_db_close(&conn);
-        close(sock);
-        return 1;
-    }
-
-    if(listen(sock, 10)) {
-        perror("listen");
-        sylverant_db_close(&conn);
-        close(sock);
-        return 1;
+        exit(EXIT_FAILURE);
     }
 
     /* Run the shipgate server. */
-    run_server(sock);
+    run_server(sock, sock6);
 
     /* Clean up. */
     close(sock);

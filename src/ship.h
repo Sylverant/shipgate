@@ -21,6 +21,7 @@
 #include <time.h>
 #include <inttypes.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/queue.h>
 
 #include <openssl/rc4.h>
@@ -58,7 +59,9 @@ typedef struct ship {
     uint32_t flags;
     uint32_t menu;
 
-    in_addr_t conn_addr;
+    struct in6_addr remote_addr6;
+    struct sockaddr_storage conn_addr;
+
     in_addr_t remote_addr;
     uint32_t proto_ver;
 
@@ -95,7 +98,7 @@ TAILQ_HEAD(ship_queue, ship);
 extern struct ship_queue ships;
 
 /* Create a new connection, storing it in the list of ships. */
-ship_t *create_connection(int sock, in_addr_t addr);
+ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size);
 
 /* Destroy a connection, closing the socket and removing it from the list. */
 void destroy_connection(ship_t *c);
