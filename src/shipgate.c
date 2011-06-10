@@ -37,7 +37,7 @@
 struct ship_queue ships = TAILQ_HEAD_INITIALIZER(ships);
 
 /* Configuration/database connections. */
-sylverant_config_t cfg;
+sylverant_config_t *cfg;
 sylverant_dbconn_t conn;
 
 static int dont_daemonize = 0;
@@ -114,7 +114,7 @@ static void load_config() {
 
     debug(DBG_LOG, "Connecting to the database...\n");
 
-    if(sylverant_db_open(&cfg.dbcfg, &conn)) {
+    if(sylverant_db_open(&cfg->dbcfg, &conn)) {
         debug(DBG_ERROR, "Can't connect to the database\n");
         exit(EXIT_FAILURE);
     }
@@ -423,6 +423,7 @@ int main(int argc, char *argv[]) {
     /* Clean up. */
     close(sock);
     sylverant_db_close(&conn);
+    sylverant_free_config(cfg);
 
     return 0;
 }

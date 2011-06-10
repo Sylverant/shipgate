@@ -1,6 +1,6 @@
 /*
     Sylverant Ship Key Generator
-    Copyright (C) 2009 Lawrence Sebald
+    Copyright (C) 2009, 2011 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -40,7 +40,7 @@
 unsigned char rndbuf[RNG_SIZE];
 
 int main(int argc, char *argv[]) {
-    sylverant_dbconfig_t cfg;
+    sylverant_config_t *cfg;
     sylverant_dbconn_t conn;
     char query[1024], data[512];
     FILE *fp, *r;
@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
     fclose(r);
 
     /* Connect to the database. */
-    if(sylverant_read_dbconfig(&cfg)) {
+    if(sylverant_read_config(&cfg)) {
         fprintf(stderr, "Couldn't read database configuration!\n");
         exit(EXIT_FAILURE);
     }
@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if(sylverant_db_open(&cfg, &conn)) {
+    if(sylverant_db_open(&cfg->dbcfg, &conn)) {
         fprintf(stderr, "Couldn't connect to the database!\n");
         fclose(fp);
         unlink("ship_key.bin");
@@ -98,6 +98,9 @@ int main(int argc, char *argv[]) {
     fwrite(&index, 1, 4, fp);
     fwrite(key, 1, 128, fp);
     fclose(fp);
+
+    sylverant_db_close(&conn);
+    sylverant_free_config(cfg);
     
     exit(EXIT_SUCCESS);
 }
