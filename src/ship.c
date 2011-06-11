@@ -677,8 +677,8 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     reply.tag = LE32(0x00010000);
     reply.gc_search = pkt->gc_search;
     reply.gc_target = pkt->gc_target;
-    reply.ip = ip;
-    reply.port = LE16((port + block * 3));
+    reply.ip = htonl(ip);
+    reply.port = LE16((port + block * 4));
     reply.menu_id = LE32(0xFFFFFFFF);
     reply.item_id = LE32(lobby_id);
     strcpy(reply.name, row[0]);
