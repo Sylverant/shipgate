@@ -25,7 +25,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 7
+#define SHIPGATE_MAXIMUM_PROTO_VER 8
 
 #ifdef PACKED
 #undef PACKED
@@ -126,7 +126,7 @@ typedef struct shipgate_cnt {
 typedef struct shipgate_fw {
     shipgate_hdr_t hdr;
     uint32_t ship_id;
-    uint32_t reserved;
+    uint32_t fw_flags;
     uint8_t pkt[0];
 } PACKED shipgate_fw_pkt;
 
@@ -146,6 +146,23 @@ typedef struct shipgate_ship_status {
     uint8_t  ship_number;
     uint8_t  reserved;
 } PACKED shipgate_ship_status_pkt;
+
+/* Updated version of the above packet, supporting IPv6. */
+typedef struct shipgate_ship_status6 {
+    shipgate_hdr_t hdr;
+    uint8_t name[12];
+    uint32_t ship_id;
+    uint32_t flags;
+    uint32_t ship_addr4;                /* IPv4 address (required) */
+    uint8_t ship_addr6[16];             /* IPv6 address (optional) */
+    uint16_t ship_port;
+    uint16_t status;
+    uint16_t clients;
+    uint16_t games;
+    uint16_t menu_code;
+    uint8_t  ship_number;
+    uint8_t  reserved[5];
+} PACKED shipgate_ship_status6_pkt;
 
 /* A packet sent to/from clients to save/restore character data. */
 typedef struct shipgate_char_data {
@@ -393,6 +410,9 @@ static const char shipgate_login_msg[] =
 
 /* Possible values for user options */
 #define USER_OPT_QUEST_LANG     0x00000001
+
+/* Possible values for the fw_flags on a forwarded packet */
+#define FW_FLAG_PREFER_IPV6     0x00000001  /* Prefer IPv6 on reply */
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);

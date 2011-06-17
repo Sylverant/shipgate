@@ -177,7 +177,7 @@ int send_welcome(ship_t *c) {
 }
 
 /* Send a ship up/down message to the given ship. */
-int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
+static int send_ship_status_old(ship_t *c, ship_t *o, uint16_t status) {
     shipgate_ship_status_pkt *pkt = (shipgate_ship_status_pkt *)sendbuf;
 
     /* Scrub the buffer */
@@ -203,6 +203,40 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
 
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_ship_status_pkt));
+}
+
+int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
+    shipgate_ship_status6_pkt *pkt = (shipgate_ship_status6_pkt *)sendbuf;
+
+    /* Fall back on the old version if the ship doesn't support the new form */
+    if(c->proto_ver < 8) {
+        return send_ship_status_old(c, o, status);
+    }
+
+    /* Scrub the buffer */
+    memset(pkt, 0, sizeof(shipgate_ship_status6_pkt));
+
+    /* Fill in the header */
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_ship_status6_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SSTATUS);
+    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_ship_status6_pkt));
+    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+
+    /* Fill in the info */
+    strcpy(pkt->name, o->name);
+    pkt->ship_id = htonl(o->key_idx);
+    pkt->ship_addr4 = o->remote_addr;
+    memcpy(pkt->ship_addr6, &o->remote_addr6, 16);
+    pkt->ship_port = htons(o->port);
+    pkt->status = htons(status);
+    pkt->flags = htonl(o->flags);
+    pkt->clients = htons(o->clients);
+    pkt->games = htons(o->games);
+    pkt->menu_code = htons(o->menu_code);
+    pkt->ship_number = (uint8_t)o->ship_number;
+
+    /* Send the packet away */
+    return send_crypt(c, sizeof(shipgate_ship_status6_pkt));
 }
 
 /* Send a ping packet to a client. */
