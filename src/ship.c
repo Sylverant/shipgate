@@ -78,6 +78,25 @@ static inline void pack_ipv6(struct in6_addr *addr, uint64_t *hi,
         ((uint64_t)addr->s6_addr[15]);
 }
 
+static inline void parse_ipv6(uint64_t hi, uint64_t lo, uint8_t buf[16]) {
+    buf[0] = (uint8_t)(hi >> 56);
+    buf[1] = (uint8_t)(hi >> 48);
+    buf[2] = (uint8_t)(hi >> 40);
+    buf[3] = (uint8_t)(hi >> 32);
+    buf[4] = (uint8_t)(hi >> 24);
+    buf[5] = (uint8_t)(hi >> 16);
+    buf[6] = (uint8_t)(hi >> 8);
+    buf[7] = (uint8_t)hi;
+    buf[8] = (uint8_t)(lo >> 56);
+    buf[9] = (uint8_t)(lo >> 48);
+    buf[10] = (uint8_t)(lo >> 40);
+    buf[11] = (uint8_t)(lo >> 32);
+    buf[12] = (uint8_t)(lo >> 24);
+    buf[13] = (uint8_t)(lo >> 16);
+    buf[14] = (uint8_t)(lo >> 8);
+    buf[15] = (uint8_t)lo;
+}
+
 /* Create a new connection, storing it in the list of ships. */
 ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size) {
     ship_t *rv;
@@ -583,22 +602,25 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     return 0;
 }
 
-static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
+static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
+                               uint32_t flags) {
     uint32_t guildcard = LE32(pkt->gc_target);
     char query[512];
     void *result;
     char **row;
     uint16_t ship_id, port;
     uint32_t lobby_id, ip, block;
+    uint64_t ip6_hi, ip6_lo;
     ship_t *s;
     dc_guild_reply_pkt reply;
+    dc_guild_reply6_pkt reply6;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
-            "lobby, lobby_id, online_ships.name, ip, port, gm_only "
-            "FROM online_clients INNER JOIN online_ships ON "
-            "online_clients.ship_id = online_ships.ship_id WHERE "
-            "guildcard='%u'", guildcard);
+            "lobby, lobby_id, online_ships.name, ip, port, gm_only, "
+            "ship_ip6_high, ship_ip6_low FROM online_clients INNER JOIN "
+            "online_ships ON online_clients.ship_id = online_ships.ship_id "
+            "WHERE guildcard='%u'", guildcard);
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Guild Search Error: %s\n", sylverant_db_error(&conn));
         return 0;
@@ -625,7 +647,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     }
 
     /* Make sure the user isn't on a GM only ship... if they are, bail now */
-    if(atoi(row[9])) {
+    if(atoi(row[8])) {
         goto out;
     }
 
@@ -662,6 +684,8 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     block = (uint32_t)strtoul(row[2], NULL, 0);
     lobby_id = (uint32_t)strtoul(row[4], NULL, 0);
     ip = (uint32_t)strtoul(row[6], NULL, 0);
+    ip6_hi = (uint64_t)strtoull(row[9], NULL, 0);
+    ip6_lo = (uint64_t)strtoull(row[10], NULL, 0);
 
     if(errno) {
         debug(DBG_WARN, "Error parsing in guild search: %s", strerror(errno));
@@ -669,29 +693,59 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt) {
     }
 
     /* Set up the reply, we should have enough data now */
-    memset(&reply, 0, DC_GUILD_REPLY_LENGTH);
+    if((flags & FW_FLAG_PREFER_IPV6) && ip6_hi) {
+        memset(&reply6, 0, DC_GUILD_REPLY6_LENGTH);
 
-    /* Fill it in */
-    reply.hdr.pkt_type = GUILD_REPLY_TYPE;
-    reply.hdr.pkt_len = LE16(DC_GUILD_REPLY_LENGTH);
-    reply.tag = LE32(0x00010000);
-    reply.gc_search = pkt->gc_search;
-    reply.gc_target = pkt->gc_target;
-    reply.ip = htonl(ip);
-    reply.port = LE16((port + block * 4));
-    reply.menu_id = LE32(0xFFFFFFFF);
-    reply.item_id = LE32(lobby_id);
-    strcpy(reply.name, row[0]);
+        /* Fill it in */
+        reply6.hdr.pkt_type = GUILD_REPLY_TYPE;
+        reply6.hdr.pkt_len = LE16(DC_GUILD_REPLY6_LENGTH);
+        reply6.hdr.flags = 6;
+        reply6.tag = LE32(0x00010000);
+        reply6.gc_search = pkt->gc_search;
+        reply6.gc_target = pkt->gc_target;
+        parse_ipv6(ip6_hi, ip6_lo, reply6.ip);
+        reply6.port = LE16((port + block * 4));
+        reply6.menu_id = LE32(0xFFFFFFFF);
+        reply6.item_id = LE32(lobby_id);
+        strcpy(reply6.name, row[0]);
 
-    if(row[3][0] == '\t') {
-        sprintf(reply.location, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+        if(row[3][0] == '\t') {
+            sprintf(reply6.location, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+        }
+        else {
+            sprintf(reply6.location, "\tE%s,BLOCK%02d,%s", row[3], block,
+                    row[5]);
+        }
+
+        /* Send it away */
+        forward_dreamcast(c, (dc_pkt_hdr_t *)&reply6, c->key_idx);
     }
     else {
-        sprintf(reply.location, "\tE%s,BLOCK%02d,%s", row[3], block, row[5]);
-    }
+        memset(&reply, 0, DC_GUILD_REPLY_LENGTH);
 
-    /* Send it away */
-    forward_dreamcast(c, (dc_pkt_hdr_t *)&reply, c->key_idx);
+        /* Fill it in */
+        reply.hdr.pkt_type = GUILD_REPLY_TYPE;
+        reply.hdr.pkt_len = LE16(DC_GUILD_REPLY_LENGTH);
+        reply.tag = LE32(0x00010000);
+        reply.gc_search = pkt->gc_search;
+        reply.gc_target = pkt->gc_target;
+        reply.ip = htonl(ip);
+        reply.port = LE16((port + block * 4));
+        reply.menu_id = LE32(0xFFFFFFFF);
+        reply.item_id = LE32(lobby_id);
+        strcpy(reply.name, row[0]);
+
+        if(row[3][0] == '\t') {
+            sprintf(reply.location, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+        }
+        else {
+            sprintf(reply.location, "\tE%s,BLOCK%02d,%s", row[3], block,
+                    row[5]);
+        }
+
+        /* Send it away */
+        forward_dreamcast(c, (dc_pkt_hdr_t *)&reply, c->key_idx);
+    }
 
 out:
     /* Finally, we're finished, clean up and return! */
@@ -708,7 +762,8 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 
     switch(type) {
         case GUILD_SEARCH_TYPE:
-            return handle_guild_search(c, (dc_guild_search_pkt *)hdr);
+            tmp = ntohl(pkt->fw_flags);
+            return handle_guild_search(c, (dc_guild_search_pkt *)hdr, tmp);
 
         case SIMPLE_MAIL_TYPE:
             return handle_dc_mail(c, (dc_simple_mail_pkt *)hdr);
