@@ -22,6 +22,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <errno.h>
+#include <iconv.h>
 #include <sys/socket.h>
 
 #include <openssl/rc4.h>
@@ -42,6 +43,10 @@
 
 /* Database connection */
 extern sylverant_dbconn_t conn;
+
+/* iconv contexts */
+extern iconv_t ic_utf8_to_utf16;
+extern iconv_t ic_utf16_to_utf8;
 
 static uint8_t recvbuf[65536];
 
@@ -278,6 +283,9 @@ static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
     strcpy(c->name, pkt->name);
     c->ship_number = ship_number;
 
+    /* Protocol v9 added BB support, so no ships in here can support it. */
+    c->flags |= LOGIN_FLAG_NOBB;
+
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
             "ship_id, gm_only, games, menu_code, flags, ship_number, "
             "protocol_ver) VALUES ('%s', '%hu', '%u', '%hu', '%u', '%u', "
@@ -418,6 +426,11 @@ static int handle_shipgate_login6(ship_t *c, shipgate_login6_reply_pkt *pkt) {
 
     pack_ipv6(&c->remote_addr6, &ip6_hi, &ip6_lo);
 
+    /* If the ship is older than v9, BB won't work. */
+    if(pver < 9) {
+        c->flags |= LOGIN_FLAG_NOBB;
+    }
+
     sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
             "ship_id, gm_only, games, menu_code, flags, ship_number, "
             "ship_ip6_high, ship_ip6_low, protocol_ver) VALUES ('%s', '%hu', "
@@ -514,7 +527,7 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
 
         TAILQ_FOREACH(s, &ships, qentry) {
             if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
-                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
             }
         }
 
@@ -539,7 +552,7 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     }
 
     /* Send it on, and finish up... */
-    forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+    forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
     return 0;
 }
 
@@ -574,7 +587,7 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
 
         TAILQ_FOREACH(s, &ships, qentry) {
             if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
-                forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+                forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
             }
         }
 
@@ -599,7 +612,64 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     }
 
     /* Send it on, and finish up... */
-    forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+    forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
+    return 0;
+}
+
+static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
+    uint32_t guildcard = LE32(pkt->gc_dest);
+    char query[256];
+    void *result;
+    char **row;
+    uint16_t ship_id;
+    ship_t *s;
+
+    /* Figure out where the user requested is */
+    sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
+            guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "BB Mail Error: %s", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch BB mail result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        /* Either the user is not online or we're dealing with a ship that does
+           not support protocol v2. Blue burst stuff isn't supported until v9,
+           so there's not anything we can do here... */
+        sylverant_db_result_free(result);
+
+        return 0;
+    }
+
+    /* Grab the data from the result */
+    errno = 0;
+    ship_id = (uint16_t)strtoul(row[0], NULL, 0);
+    sylverant_db_result_free(result);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in bb mail: %s", strerror(errno));
+        return 0;
+    }
+
+    /* If we've got this far, we should have the ship we need to send to */
+    s = find_ship(ship_id);
+    if(!s) {
+        debug(DBG_WARN, "Invalid ship?!?!?\n");
+        return 0;
+    }
+
+    /* Send it on, and finish up... */
+    if(s->proto_ver >= 9) {
+        forward_bb(s, (bb_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
+    }
+
     return 0;
 }
 
@@ -640,7 +710,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
            just to be sure... */
         TAILQ_FOREACH(s, &ships, qentry) {
             if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
-                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
             }
         }
 
@@ -674,7 +744,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
        client doesn't really exist just yet. */
     if(row[4] == NULL || row[3] == NULL) {
         if(s->proto_ver < 3) {
-            forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx);
+            forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
         }
 
         goto out;
@@ -705,7 +775,14 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply6.gc_search = pkt->gc_search;
         reply6.gc_target = pkt->gc_target;
         parse_ipv6(ip6_hi, ip6_lo, reply6.ip);
-        reply6.port = LE16((port + block * 4));
+
+        if(c->proto_ver < 9) {
+            reply6.port = LE16((port + block * 4));
+        }
+        else {
+            reply6.port = LE16((port + block * 5));
+        }
+
         reply6.menu_id = LE32(0xFFFFFFFF);
         reply6.item_id = LE32(lobby_id);
         strcpy(reply6.name, row[0]);
@@ -719,7 +796,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         }
 
         /* Send it away */
-        forward_dreamcast(c, (dc_pkt_hdr_t *)&reply6, c->key_idx);
+        forward_dreamcast(c, (dc_pkt_hdr_t *)&reply6, c->key_idx, 0, 0);
     }
     else {
         memset(&reply, 0, DC_GUILD_REPLY_LENGTH);
@@ -731,7 +808,14 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply.gc_search = pkt->gc_search;
         reply.gc_target = pkt->gc_target;
         reply.ip = htonl(ip);
-        reply.port = LE16((port + block * 4));
+
+        if(c->proto_ver < 9) {
+            reply.port = LE16((port + block * 4));
+        }
+        else {
+            reply.port = LE16((port + block * 5));
+        }
+
         reply.menu_id = LE32(0xFFFFFFFF);
         reply.item_id = LE32(lobby_id);
         strcpy(reply.name, row[0]);
@@ -745,7 +829,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         }
 
         /* Send it away */
-        forward_dreamcast(c, (dc_pkt_hdr_t *)&reply, c->key_idx);
+        forward_dreamcast(c, (dc_pkt_hdr_t *)&reply, c->key_idx, 0, 0);
     }
 
 out:
@@ -754,8 +838,372 @@ out:
     return 0;
 }
 
+static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_guild_search_pkt *p = (bb_guild_search_pkt *)pkt->pkt;
+    uint32_t guildcard = LE32(p->gc_target);
+    uint32_t gc_sender = ntohl(pkt->guildcard);
+    uint32_t b_sender = ntohl(pkt->block);
+    char query[512];
+    void *result;
+    char **row;
+    uint16_t ship_id, port;
+    uint32_t lobby_id, ip, block;
+    uint64_t ip6_hi, ip6_lo;
+    ship_t *s;
+    bb_guild_reply_pkt reply;
+    size_t in, out;
+    ICONV_CONST char *inptr;
+    char *outptr;
+
+    /* Figure out where the user requested is */
+    sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
+            "lobby, lobby_id, online_ships.name, ip, port, gm_only, "
+            "ship_ip6_high, ship_ip6_low FROM online_clients INNER JOIN "
+            "online_ships ON online_clients.ship_id = online_ships.ship_id "
+            "WHERE guildcard='%u'", guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Guild Search Error: %s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch Guild Search result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        /* Either the user is not online or we're dealing with a ship that does
+           not support protocol v2. Since BB wasn't supported until protocol v9,
+           bail out now... */
+        goto out;
+    }
+
+    /* Make sure the user isn't on a GM only ship... if they are, bail now */
+    if(atoi(row[8])) {
+        goto out;
+    }
+
+    /* Grab the ship we're looking at first */
+    errno = 0;
+    ship_id = (uint16_t)strtoul(row[1], NULL, 0);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in guild ship: %s", strerror(errno));
+        goto out;
+    }
+
+    /* If we've got this far, we should have the ship we need to send to */
+    s = find_ship(ship_id);
+    if(!s) {
+        debug(DBG_WARN, "Invalid ship?!?!?!\n");
+        goto out;
+    }
+
+    /* Make sure that the ship supports protocol v9, since BB wasn't supported
+       until then. */
+    if(s->proto_ver < 9) {
+        goto out;
+    }
+
+    /* If either of these are NULL then the user is not in a lobby. */
+    if(row[4] == NULL || row[3] == NULL) {
+        goto out;
+    }
+
+    /* Grab the data from the result */
+    port = (uint16_t)strtoul(row[7], NULL, 0);
+    block = (uint32_t)strtoul(row[2], NULL, 0);
+    lobby_id = (uint32_t)strtoul(row[4], NULL, 0);
+    ip = (uint32_t)strtoul(row[6], NULL, 0);
+    ip6_hi = (uint64_t)strtoull(row[9], NULL, 0);
+    ip6_lo = (uint64_t)strtoull(row[10], NULL, 0);
+
+    if(errno) {
+        debug(DBG_WARN, "Error parsing in guild search: %s", strerror(errno));
+        goto out;
+    }
+
+    /* Set up the reply, we should have enough data now */
+    memset(&reply, 0, BB_GUILD_REPLY_LENGTH);
+
+    /* Fill it in */
+    reply.hdr.pkt_type = LE16(GUILD_REPLY_TYPE);
+    reply.hdr.pkt_len = LE16(BB_GUILD_REPLY_LENGTH);
+    reply.tag = LE32(0x00010000);
+    reply.gc_search = p->gc_search;
+    reply.gc_target = p->gc_target;
+    reply.ip = htonl(ip);
+    reply.port = LE16((port + block * 5 + 4));
+    reply.menu_id = LE32(0xFFFFFFFF);
+    reply.item_id = LE32(lobby_id);
+
+    /* Convert the name to the right encoding */
+    strcpy(query, row[0]);
+    in = strlen(query);
+    inptr = query;
+
+    if(query[0] == '\t' && (query[1] == 'J' || query[1] == 'E')) {
+        outptr = (char *)reply.name;
+        out = 0x40;
+    }
+    else {
+        outptr = (char *)&reply.name[2];
+        reply.name[0] = LE16('\t');
+        reply.name[1] = LE16('J');
+        out = 0x3C;
+    }
+
+    iconv(ic_utf8_to_utf16, &inptr, &in, &outptr, &out);
+
+    /* Build the location string, and convert it */
+    if(row[3][0] == '\t') {
+        sprintf(query, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+    }
+    else {
+        sprintf(query, "\tE%s,BLOCK%02d,%s", row[3], block, row[5]);
+    }
+
+    in = strlen(query);
+    inptr = query;
+    out = 0x88;
+    outptr = (char *)reply.location;
+    iconv(ic_utf8_to_utf16, &inptr, &in, &outptr, &out);
+
+    /* Send it away */
+    forward_bb(c, (bb_pkt_hdr_t *)&reply, c->key_idx, gc_sender, b_sender);
+
+out:
+    /* Finally, we're finished, clean up and return! */
+    sylverant_db_result_free(result);
+
+    return 0;
+}
+
+/* Handle a Blue Burst user's request to add a guildcard to their list */
+static int handle_bb_gcadd(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_guildcard_add_pkt *gc = (bb_guildcard_add_pkt *)pkt->pkt;
+    uint16_t len = LE16(gc->hdr.pkt_len);
+    uint32_t sender = ntohl(pkt->guildcard);
+    uint32_t fr_gc = LE32(gc->guildcard);
+    char query[1024];
+    char name[97];
+    char team_name[65];
+    char text[373];
+
+    /* Make sure the packet is sane */
+    if(len != 0x0110) {
+        return -1;
+    }
+
+    /* Escape all the strings first */
+    sylverant_db_escape_str(&conn, name, (char *)gc->name, 48);
+    sylverant_db_escape_str(&conn, team_name, (char *)gc->team_name, 32);
+    sylverant_db_escape_str(&conn, text, (char *)gc->text, 176);
+
+    /* Add the entry in the db... */
+    sprintf(query, "INSERT INTO blueburst_guildcards (guildcard, friend_gc, "
+            "name, team_name, text, language, section_id, class) VALUES ('%"
+            PRIu32 "', '%" PRIu32 "', '%s', '%s', '%s', '%" PRIu8 "', '%" 
+            PRIu8 "', '%" PRIu8 "') ON DUPLICATE KEY UPDATE "
+            "name=VALUES(name), text=VALUES(text), language=VALUES(language), "
+            "section_id=VALUES(section_id), class=VALUES(class)", sender,
+            fr_gc, name, team_name, text, gc->language, gc->section,
+            gc->char_class);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't add bb guildcard (%" PRIu32 ": %" PRIu32
+              ")\n", sender, fr_gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_BB, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)gc, len);
+        return 0;
+    }
+
+    /* And, we're done... */
+    return 0;
+}
+
+/* Handle a Blue Burst user's request to delete a guildcard from their list */
+static int handle_bb_gcdel(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_guildcard_del_pkt *gc = (bb_guildcard_del_pkt *)pkt->pkt;
+    uint16_t len = LE16(gc->hdr.pkt_len);
+    uint32_t sender = ntohl(pkt->guildcard);
+    uint32_t fr_gc = LE32(gc->guildcard);
+    char query[256];
+
+    if(len != 0x000C) {
+        return -1;
+    }
+
+    /* Build the query and run it */
+    sprintf(query, "CALL blueburst_guildcard_delete('%" PRIu32 "', '%" PRIu32
+            "')", sender, fr_gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't delete bb guildcard (%" PRIu32 ": %" PRIu32
+              ")\n", sender, fr_gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_BB, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)gc, len);
+        return 0;
+    }
+
+    /* And, we're done... */
+    return 0;
+}
+
+/* Handle a Blue Burst user's request to sort guildcards */
+static int handle_bb_gcsort(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_guildcard_sort_pkt *gc = (bb_guildcard_sort_pkt *)pkt->pkt;
+    uint16_t len = LE16(gc->hdr.pkt_len);
+    uint32_t sender = ntohl(pkt->guildcard);
+    uint32_t fr_gc1 = LE32(gc->guildcard1);
+    uint32_t fr_gc2 = LE32(gc->guildcard2);
+    char query[256];
+
+    if(len != 0x0010) {
+        return -1;
+    }
+
+    /* Build the query and run it */
+    sprintf(query, "CALL blueburst_guildcard_sort('%" PRIu32 "', '%" PRIu32
+            "', '%" PRIu32 "')", sender, fr_gc1, fr_gc2);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't sort bb guildcards (%" PRIu32 ": %" PRIu32
+              " - %" PRIu32 ")\n", sender, fr_gc1, fr_gc2);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_BB, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)gc, len);
+        return 0;
+    }
+
+    /* And, we're done... */
+    return 0;
+}
+
+/* Handle a Blue Burst user's request to add a user to their blacklist */
+static int handle_bb_blacklistadd(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_blacklist_add_pkt *gc = (bb_blacklist_add_pkt *)pkt->pkt;
+    uint16_t len = LE16(gc->hdr.pkt_len);
+    uint32_t sender = ntohl(pkt->guildcard);
+    uint32_t bl_gc = LE32(gc->guildcard);
+    char query[1024];
+    char name[97];
+    char team_name[65];
+    char text[373];
+
+    /* Make sure the packet is sane */
+    if(len != 0x0110) {
+        return -1;
+    }
+
+    /* Escape all the strings first */
+    sylverant_db_escape_str(&conn, name, (char *)gc->name, 48);
+    sylverant_db_escape_str(&conn, team_name, (char *)gc->team_name, 32);
+    sylverant_db_escape_str(&conn, text, (char *)gc->text, 176);
+
+    /* Add the entry in the db... */
+    sprintf(query, "INSERT INTO blueburst_blacklist (guildcard, blocked_gc, "
+            "name, team_name, text, language, section_id, class) VALUES ('%"
+            PRIu32 "', '%" PRIu32 "', '%s', '%s', '%s', '%" PRIu8 "', '%" 
+            PRIu8 "', '%" PRIu8 "') ON DUPLICATE KEY UPDATE "
+            "name=VALUES(name), text=VALUES(text), language=VALUES(language), "
+            "section_id=VALUES(section_id), class=VALUES(class)", sender,
+            bl_gc, name, team_name, text, gc->language, gc->section,
+            gc->char_class);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't add blacklist entry (%" PRIu32 ": %" PRIu32
+              ")\n", sender, bl_gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_BB, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)gc, len);
+        return 0;
+    }
+
+    /* And, we're done... */
+    return 0;
+}
+
+/* Handle a Blue Burst user's request to delete a user from their blacklist */
+static int handle_bb_blacklistdel(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_blacklist_del_pkt *gc = (bb_blacklist_del_pkt *)pkt->pkt;
+    uint16_t len = LE16(gc->hdr.pkt_len);
+    uint32_t sender = ntohl(pkt->guildcard);
+    uint32_t bl_gc = LE32(gc->guildcard);
+    char query[256];
+
+    if(len != 0x000C) {
+        return -1;
+    }
+
+    /* Build the query and run it */
+    sprintf(query, "DELETE FROM blueburst_blacklist WHERE guildcard='%" PRIu32
+            "' AND blocked_gc='%" PRIu32 "'", sender, bl_gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't delete blacklist entry (%" PRIu32 ": %"
+              PRIu32 ")\n", sender, bl_gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_BB, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)gc, len);
+        return 0;
+    }
+
+    /* And, we're done... */
+    return 0;
+}
+
+/* Handle a Blue Burst set guildcard comment packet */
+static int handle_bb_set_comment(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_guildcard_comment_pkt *gc = (bb_guildcard_comment_pkt *)pkt->pkt;
+    uint16_t pkt_len = LE16(gc->hdr.pkt_len);
+    uint32_t sender = ntohl(pkt->guildcard);
+    uint32_t fr_gc = LE32(gc->guildcard);
+    char query[512];
+    char comment[0x88 * 4 + 1];
+    int len = 0;
+
+    if(pkt_len != 0x00BC) {
+        return -1;
+    }
+
+    /* Scan the string for its length */
+    while(len < 0x88 && gc->text[len]) ++len;
+    memset(&gc->text[len], 0, (0x88 - len) * 2);
+    len = (len + 1) * 2;
+
+    sylverant_db_escape_str(&conn, comment, (char *)gc->text, len);
+
+    /* Build the query and run it */
+    sprintf(query, "UPDATE blueburst_guildcards SET comment='%s' WHERE "
+            "guildcard='%" PRIu32"' AND friend_gc='%" PRIu32 "'", comment,
+            sender, fr_gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't update guildcard comment (%" PRIu32 ": %"
+              PRIu32 ")\n", sender, fr_gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_BB, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)gc, len);
+        return 0;
+    }
+
+    /* And, we're done... */
+    return 0;
+}
+
 /* Handle a ship's forwarded Dreamcast packet. */
-static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
+static int handle_dreamcast_old(ship_t *c, shipgate_fw_pkt *pkt) {
     dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
     uint8_t type = hdr->pkt_type;
     ship_t *i;
@@ -781,7 +1229,7 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 
             TAILQ_FOREACH(i, &ships, qentry) {
                 if(i->key_idx == tmp) {
-                    return forward_dreamcast(i, hdr, c->key_idx);
+                    return forward_dreamcast(i, hdr, c->key_idx, 0, 0);
                 }
             }
 
@@ -796,7 +1244,7 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_pkt *pkt) {
 }
 
 /* Handle a ship's forwarded PC packet. */
-static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
+static int handle_pc_old(ship_t *c, shipgate_fw_pkt *pkt) {
     dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
     uint8_t type = hdr->pkt_type;
 
@@ -812,13 +1260,124 @@ static int handle_pc(ship_t *c, shipgate_fw_pkt *pkt) {
     }
 }
 
+/* Handle a ship's forwarded Dreamcast packet. */
+static int handle_dreamcast(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
+    uint8_t type = hdr->pkt_type;
+    ship_t *i;
+    uint32_t tmp;
+
+    switch(type) {
+        case GUILD_SEARCH_TYPE:
+            tmp = ntohl(pkt->fw_flags);
+            return handle_guild_search(c, (dc_guild_search_pkt *)hdr, tmp);
+
+        case SIMPLE_MAIL_TYPE:
+            return handle_dc_mail(c, (dc_simple_mail_pkt *)hdr);
+
+        case GUILD_REPLY_TYPE:
+            /* We shouldn't get these anymore if a ship supports protocol v3 or
+               higher, since we shouldn't have sent them... */
+            if(c->proto_ver > 2) {
+                return -1;
+            }
+
+            /* Send this one to the original sender. */
+            tmp = ntohl(pkt->ship_id);
+
+            TAILQ_FOREACH(i, &ships, qentry) {
+                if(i->key_idx == tmp) {
+                    return forward_dreamcast(i, hdr, c->key_idx, 0, 0);
+                }
+            }
+
+            return 0;
+
+        default:
+            /* Warn the ship that sent the packet, then drop it */
+            send_error(c, SHDR_TYPE_DC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
+                       (uint8_t *)pkt, ntohs(pkt->hdr.pkt_len));
+            return 0;
+    }
+}
+
+/* Handle a ship's forwarded PC packet. */
+static int handle_pc(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
+    uint8_t type = hdr->pkt_type;
+
+    switch(type) {
+        case SIMPLE_MAIL_TYPE:
+            return handle_pc_mail(c, (pc_simple_mail_pkt *)hdr);
+
+        default:
+            /* Warn the ship that sent the packet, then drop it */
+            send_error(c, SHDR_TYPE_PC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
+                       (uint8_t *)pkt, ntohs(pkt->hdr.pkt_len));
+            return 0;
+    }
+}
+
+static int handle_bb(ship_t *c, shipgate_fw_9_pkt *pkt) {
+    bb_pkt_hdr_t *hdr = (bb_pkt_hdr_t *)pkt->pkt;
+    uint16_t type = LE16(hdr->pkt_type);
+    uint16_t len = LE16(hdr->pkt_len);
+
+    /* These were formally introduced in protocol v9. */
+    if(c->proto_ver < 9) {
+        return -1;
+    }
+
+    switch(type) {
+        case BB_ADD_GUILDCARD_TYPE:
+            return handle_bb_gcadd(c, pkt);
+
+        case BB_DEL_GUILDCARD_TYPE:
+            return handle_bb_gcdel(c, pkt);
+
+        case BB_SORT_GUILDCARD_TYPE:
+            return handle_bb_gcsort(c, pkt);
+
+        case BB_ADD_BLOCKED_USER_TYPE:
+            return handle_bb_blacklistadd(c, pkt);
+
+        case BB_DEL_BLOCKED_USER_TYPE:
+            return handle_bb_blacklistdel(c, pkt);
+
+        case SIMPLE_MAIL_TYPE:
+            return handle_bb_mail(c, (bb_simple_mail_pkt *)hdr);
+
+        case GUILD_SEARCH_TYPE:
+            return handle_bb_guild_search(c, pkt);
+
+        case BB_SET_GUILDCARD_COMMENT_TYPE:
+            return handle_bb_set_comment(c, pkt);
+
+        default:
+            /* Warn the ship that sent the packet, then drop it */
+            send_error(c, SHDR_TYPE_BB, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
+                       (uint8_t *)pkt, len);
+            return 0;
+    }
+}
+
 /* Handle a ship's save character data packet. */
 static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
     uint32_t gc, slot;
-    char query[4096];
+    uint16_t len = ntohs(pkt->hdr.pkt_unc_len) -
+        sizeof(shipgate_char_data_pkt);
+    static char query[16384];
 
     gc = ntohl(pkt->guildcard);
     slot = ntohl(pkt->slot);
+
+    /* Is it a Blue Burst character or not? */
+    if(len > 1056) {
+        len = sizeof(sylverant_bb_db_char_t);
+    }
+    else {
+        len = 1052;
+    }
 
     /* Delete any character data already exising in that slot. */
     sprintf(query, "DELETE FROM character_data WHERE guildcard='%u' AND "
@@ -838,7 +1397,7 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
     sprintf(query, "INSERT INTO character_data(guildcard, slot, data) VALUES "
             "('%u', '%u', '", gc, slot);
     sylverant_db_escape_str(&conn, query + strlen(query), (char *)pkt->data,
-                            1052);
+                            len);
     strcat(query, "')");
 
     if(sylverant_db_query(&conn, query)) {
@@ -859,9 +1418,11 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
 static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     uint32_t gc, slot;
     char query[256];
-    uint8_t data[1052];
+    uint8_t *data;
     void *result;
     char **row;
+    unsigned long *len;
+    int sz, rv;
 
     gc = ntohl(pkt->guildcard);
     slot = ntohl(pkt->slot);
@@ -899,12 +1460,40 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
         return 0;
     }
 
+    /* Grab the length of the character data */
+    if(!(len = sylverant_db_result_lengths(result))) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "Couldn't get length of character data\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
     /* Grab the data from the result */
-    memcpy(data, row[0], 1052);
+    sz = (int)len[0];
+
+    data = (uint8_t *)malloc(sz);
+    if(!data) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "Couldn't allocate for character data\n");
+        debug(DBG_WARN, "%s\n", strerror(errno));
+
+        send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
+    memcpy(data, row[0], len[0]);
     sylverant_db_result_free(result);
 
     /* Send the data back to the ship. */
-    return send_cdata(c, gc, slot, data);
+    rv = send_cdata(c, gc, slot, data, sz);
+
+    /* Clean up and finish */
+    free(data);
+    return rv;
 }
 
 /* Handle a GM login request coming from a ship. */
@@ -1161,6 +1750,7 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
 
 static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     char query[512];
+    char name[64];
     char tmp[128];
     uint32_t gc, bl, gc2, bl2, opt;
     uint16_t ship_id;
@@ -1169,17 +1759,35 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     char **row;
     void *optpkt;
     unsigned long *lengths;
+    size_t in, out;
+    ICONV_CONST char *inptr;
+    char *outptr;
 
     /* Packet introduced in protocol version 2. Error to send in v1. */
     if(c->proto_ver < 2) {
         return -1;
     }
 
-    /* Make sure the name is terminated properly */
-    if(pkt->ch_name[31] != '\0') {
-        return send_error(c, SHDR_TYPE_BLKLOGIN, SHDR_FAILURE,
-                          ERR_BLOGIN_INVAL_NAME, (uint8_t *)&pkt->guildcard,
-                          8);
+    /* Is the name a Blue Burst-style (UTF-16) name or not? */
+    if(pkt->ch_name[0] == '\t') {
+        memset(name, 0, 64);
+        in = 32;
+        out = 64;
+        inptr = pkt->ch_name;
+        outptr = name;
+
+        iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
+    }
+    else {
+        /* Make sure the name is terminated properly */
+        if(pkt->ch_name[31] != '\0') {
+            return send_error(c, SHDR_TYPE_BLKLOGIN, SHDR_FAILURE,
+                              ERR_BLOGIN_INVAL_NAME, (uint8_t *)&pkt->guildcard,
+                              8);
+        }
+
+        /* The name is ASCII, which is safe to use as UTF-8 */
+        strcpy(name, pkt->ch_name);
     }
 
     /* Parse out some stuff we'll use */
@@ -1187,7 +1795,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     bl = ntohl(pkt->blocknum);
 
     /* Insert the client into the online_clients table */
-    sylverant_db_escape_str(&conn, tmp, pkt->ch_name, strlen(pkt->ch_name));
+    sylverant_db_escape_str(&conn, tmp, name, strlen(name));
     sprintf(query, "INSERT INTO online_clients(guildcard, name, ship_id, "
             "block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp, c->key_idx, bl);
 
@@ -1227,8 +1835,8 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
         c2 = find_ship(ship_id);
 
         if(c2) {
-            send_friend_message(c2, 1, gc2, bl2, gc, bl, c->key_idx,
-                                pkt->ch_name, row[3]);
+            send_friend_message(c2, 1, gc2, bl2, gc, bl, c->key_idx, name,
+                                row[3]);
         }
     }
 
@@ -1280,21 +1888,40 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
 
 static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     char query[512];
+    char name[32];
     uint32_t gc, bl, gc2, bl2;
     uint16_t ship_id;
     ship_t *c2;
     void *result;
     char **row;
+    size_t in, out;
+    ICONV_CONST char *inptr;
+    char *outptr;
 
     /* Packet introduced in protocol version 2. Error to send in v1. */
     if(c->proto_ver < 2) {
         return -1;
     }
 
-    /* Make sure the name is terminated properly */
-    if(pkt->ch_name[31] != '\0') {
-        /* Maybe send an error... Probably not worth it at this point */
-        return 0;
+    /* Is the name a Blue Burst-style (UTF-16) name or not? */
+    if(pkt->ch_name[0] == '\t') {
+        memset(name, 0, 32);
+        in = 32;
+        out = 32;
+        inptr = pkt->ch_name;
+        outptr = name;
+
+        iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
+    }
+    else {
+        /* Make sure the name is terminated properly */
+        if(pkt->ch_name[31] != '\0') {
+            /* Maybe we should send an error here... Probably not worth it. */
+            return 0;
+        }
+
+        /* The name is ASCII, which is safe to use as UTF-8 */
+        strcpy(name, pkt->ch_name);
     }
 
     /* Parse out some stuff we'll use */
@@ -1338,8 +1965,8 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
         c2 = find_ship(ship_id);
 
         if(c2) {
-            send_friend_message(c2, 0, gc2, bl2, gc, bl, c->key_idx,
-                                pkt->ch_name, row[3]);
+            send_friend_message(c2, 0, gc2, bl2, gc, bl, c->key_idx, name,
+                                row[3]);
         }
     }
 
@@ -1477,9 +2104,12 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
 
 static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
     char query[512];
-    char tmp[128], tmp2[128];
+    char tmp[128], tmp2[128], name[64];
     uint32_t gc, lid, count, bl, i;
     uint16_t len;
+    size_t in, out;
+    ICONV_CONST char *inptr;
+    char *outptr;
 
     /* Packet introduced in protocol version 3. Error to send in v2/v1. */
     if(c->proto_ver < 3) {
@@ -1508,8 +2138,28 @@ static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
 
     /* Run through each entry */
     for(i = 0; i < count; ++i) {
+        /* Is the name a Blue Burst-style (UTF-16) name or not? */
+        if(pkt->entries[i].ch_name[0] == '\t') {
+            memset(name, 0, 64);
+            in = 32;
+            out = 64;
+            inptr = pkt->entries[i].ch_name;
+            outptr = name;
+
+            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
+        }
+        else {
+            /* Make sure the name is terminated properly */
+            if(pkt->entries[i].ch_name[31] != '\0') {
+                continue;
+            }
+
+            /* The name is ASCII, which is safe to use as UTF-8 */
+            strcpy(name, pkt->entries[i].ch_name);
+        }
+
         /* Make sure the names look sane */
-        if(pkt->entries[i].ch_name[31] || pkt->entries[i].lobby_name[31]) {
+        if(pkt->entries[i].lobby_name[31]) {
             continue;
         }
 
@@ -1518,8 +2168,7 @@ static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
         lid = ntohl(pkt->entries[i].lobby);        
 
         /* Escape the name string */
-        sylverant_db_escape_str(&conn, tmp, pkt->entries[i].ch_name,
-                                strlen(pkt->entries[i].ch_name));
+        sylverant_db_escape_str(&conn, tmp, name, strlen(name));
 
         /* If we're not in a lobby, that's all we need */
         if(lid == 0) {
@@ -1860,6 +2509,82 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
                       (uint8_t *)&pkt->guildcard, 24);
 }
 
+static int handle_bbopt_req(ship_t *c, shipgate_bb_opts_req_pkt *pkt) {
+    char query[1024];
+    uint32_t gc, block;
+    void *result;
+    char **row;
+    sylverant_bb_db_opts_t opts;
+
+    /* Packet introduced in protocol version 9. */
+    if(c->proto_ver < 9) {
+        return -1;
+    }
+
+    /* Parse out the guildcard */
+    gc = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+
+    /* Build the db query */
+    sprintf(query, "SELECT options FROM blueburst_options WHERE guildcard='%"
+            PRIu32 "'", gc);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_BBOPTS, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_BBOPTS, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        sylverant_db_result_free(result);
+        return send_error(c, SHDR_TYPE_BBOPTS, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* Send the packet */
+    memcpy(&opts, row[0], sizeof(sylverant_bb_db_opts_t));
+    send_bb_opts(c, gc, block, &opts);
+
+    sylverant_db_result_free(result);
+    return 0;
+}
+
+static int handle_bbopts(ship_t *c, shipgate_bb_opts_pkt *pkt) {
+    static char query[sizeof(sylverant_bb_db_opts_t) * 2 + 256];
+    uint32_t gc;
+
+    /* Packet introduced in protocol version 9. */
+    if(c->proto_ver < 9) {
+        return -1;
+    }
+
+    /* Parse out the guildcard */
+    gc = ntohl(pkt->guildcard);
+
+    /* Build the db query */
+    strcpy(query, "UPDATE blueburst_options SET options='");
+    sylverant_db_escape_str(&conn, query + strlen(query), (char *)&pkt->opts,
+                            sizeof(sylverant_bb_db_opts_t));
+    sprintf(query + strlen(query), "' WHERE guildcard='%" PRIu32 "'", gc);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_BBOPTS, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    return 0;
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -1886,10 +2611,23 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_count(c, (shipgate_cnt_pkt *)pkt);
 
         case SHDR_TYPE_DC:
-            return handle_dreamcast(c, (shipgate_fw_pkt *)pkt);
+            if(c->proto_ver < 9) {
+                return handle_dreamcast_old(c, (shipgate_fw_pkt *)pkt);
+            }
+            else {
+                return handle_dreamcast(c, (shipgate_fw_9_pkt *)pkt);
+            }
 
         case SHDR_TYPE_PC:
-            return handle_pc(c, (shipgate_fw_pkt *)pkt);
+            if(c->proto_ver < 9) {
+                return handle_pc_old(c, (shipgate_fw_pkt *)pkt);
+            }
+            else {
+                return handle_pc(c, (shipgate_fw_9_pkt *)pkt);
+            }
+
+        case SHDR_TYPE_BB:
+            return handle_bb(c, (shipgate_fw_9_pkt *)pkt);
 
         case SHDR_TYPE_PING:
             /* If this is a ping request, reply. Otherwise, ignore it, the work
@@ -1940,6 +2678,12 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_USEROPT:
             return handle_useropt(c, (shipgate_user_opt_pkt *)pkt);
+
+        case SHDR_TYPE_BBOPTS:
+            return handle_bbopts(c, (shipgate_bb_opts_pkt *)pkt);
+
+        case SHDR_TYPE_BBOPT_REQ:
+            return handle_bbopt_req(c, (shipgate_bb_opts_req_pkt *)pkt);
 
         default:
             return -3;

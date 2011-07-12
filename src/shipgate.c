@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
+#include <iconv.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -39,6 +40,10 @@ struct ship_queue ships = TAILQ_HEAD_INITIALIZER(ships);
 /* Configuration/database connections. */
 sylverant_config_t *cfg;
 sylverant_dbconn_t conn;
+
+/* Various iconv contexts we'll use */
+iconv_t ic_utf8_to_utf16;
+iconv_t ic_utf16_to_utf8;
 
 static int dont_daemonize = 0;
 
@@ -407,6 +412,19 @@ int main(int argc, char *argv[]) {
 
     load_config();
 
+    /* Create the iconv contexts we'll use */
+    ic_utf8_to_utf16 = iconv_open("UTF-16LE", "UTF-8");
+    if(ic_utf8_to_utf16 == (iconv_t)-1) {
+        debug(DBG_ERROR, "Cannot create iconv context (UTF-8 to UTF-16)\n");
+        exit(EXIT_FAILURE);
+    }
+
+    ic_utf16_to_utf8 = iconv_open("UTF-8", "UTF-16LE");
+    if(ic_utf16_to_utf8 == (iconv_t)-1) {
+        debug(DBG_ERROR, "Cannot create iconv context (UTF-16 to UTF-8)\n");
+        exit(EXIT_FAILURE);
+    }
+
     /* Create the socket and listen for connections. */
     sock = open_sock(PF_INET);
     sock6 = open_sock(PF_INET6);
@@ -422,8 +440,11 @@ int main(int argc, char *argv[]) {
 
     /* Clean up. */
     close(sock);
+    close(sock6);
     sylverant_db_close(&conn);
     sylverant_free_config(cfg);
+    iconv_close(ic_utf8_to_utf16);
+    iconv_close(ic_utf16_to_utf8);
 
     return 0;
 }

@@ -18,14 +18,16 @@
 #ifndef SHIPGATE_H
 #define SHIPGATE_H
 
-#include <inttypes.h>
+#include <stdint.h>
+
+#include <sylverant/characters.h>
 
 #include "ship.h"
 #include "packets.h"
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 1
-#define SHIPGATE_MAXIMUM_PROTO_VER 8
+#define SHIPGATE_MAXIMUM_PROTO_VER 9
 
 #ifdef PACKED
 #undef PACKED
@@ -130,6 +132,16 @@ typedef struct shipgate_fw {
     uint8_t pkt[0];
 } PACKED shipgate_fw_pkt;
 
+/* A forwarded player packet (updated in proto v9). */
+typedef struct shipgate_fw_9 {
+    shipgate_hdr_t hdr;
+    uint32_t ship_id;
+    uint32_t fw_flags;
+    uint32_t guildcard;
+    uint32_t block;
+    uint8_t pkt[0];
+} PACKED shipgate_fw_9_pkt;
+
 /* A packet telling clients that a ship has started or dropped. */
 typedef struct shipgate_ship_status {
     shipgate_hdr_t hdr;
@@ -170,7 +182,7 @@ typedef struct shipgate_char_data {
     uint32_t guildcard;
     uint32_t slot;
     uint32_t padding;
-    uint8_t data[1052];
+    uint8_t data[];
 } PACKED shipgate_char_data_pkt;
 
 /* A packet sent to request saved character data. */
@@ -331,6 +343,21 @@ typedef struct shipgate_user_options {
     shipgate_user_opt_t options[];
 } PACKED shipgate_user_opt_pkt;
 
+/* Packet used to request Blue Burst options */
+typedef struct shipgate_bb_opts_req {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t block;
+} PACKED shipgate_bb_opts_req_pkt;
+
+/* Packet used to send Blue Burst options to a user */
+typedef struct shipgate_bb_opts {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t block;
+    sylverant_bb_db_opts_t opts;
+} PACKED shipgate_bb_opts_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -347,6 +374,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_BB        0x0002      /* A decrypted Blue Burst game packet */
 #define SHDR_TYPE_PC        0x0003      /* A decrypted PCv2 game packet */
 #define SHDR_TYPE_GC        0x0004      /* A decrypted Gamecube game packet */
+#define SHDR_TYPE_EP3       0x0005      /* A decrypted Episode 3 packet */
 #define SHDR_TYPE_LOGIN     0x0010      /* A login request */
 #define SHDR_TYPE_COUNT     0x0011      /* A Client/Game Count update */
 #define SHDR_TYPE_SSTATUS   0x0012      /* A Ship has come up or gone down */
@@ -369,6 +397,8 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_GLOBALMSG 0x0023      /* A Global message packet */
 #define SHDR_TYPE_USEROPT   0x0024      /* A user's options -- sent on login */
 #define SHDR_TYPE_LOGIN6    0x0025      /* A ship login (potentially IPv6) */
+#define SHDR_TYPE_BBOPTS    0x0026      /* A user's Blue Burst options */
+#define SHDR_TYPE_BBOPT_REQ 0x0027      /* Request Blue Burst options */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -378,6 +408,7 @@ static const char shipgate_login_msg[] =
 #define LOGIN_FLAG_NOPC     0x00000040  /* Do not allow PSOPC clients */
 #define LOGIN_FLAG_NOEP12   0x00000080  /* Do not allow PSO Ep1&2 clients */
 #define LOGIN_FLAG_NOEP3    0x00000100  /* Do not allow PSO Ep3 clients */
+#define LOGIN_FLAG_NOBB     0x00000200  /* Do not allow PSOBB clients */
 
 /* General error codes */
 #define ERR_NO_ERROR            0x00000000
@@ -418,10 +449,16 @@ static const char shipgate_login_msg[] =
 int send_welcome(ship_t *c);
 
 /* Forward a Dreamcast packet to the given ship, with additional metadata. */
-int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *pkt, uint32_t sender);
+int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *pkt, uint32_t sender,
+                      uint32_t gc, uint32_t block);
 
 /* Forward a PC packet to the given ship like the above function. */
-int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender);
+int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender, uint32_t gc,
+               uint32_t block);
+
+/* Forward a Blue Burs packet to the given ship, like the above. */
+int forward_bb(ship_t *c, bb_pkt_hdr_t *bb, uint32_t sender, uint32_t gc,
+               uint32_t block);
 
 /* Send a ship up/down message to the given ship. */
 int send_ship_status(ship_t *c, ship_t *o, uint16_t status);
@@ -430,7 +467,7 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status);
 int send_ping(ship_t *c, int reply);
 
 /* Send the ship a character data restore. */
-int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata);
+int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz);
 
 /* Send a reply to a GM login request. */
 int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p);
@@ -469,5 +506,9 @@ void *user_options_append(void *p, uint32_t opt, uint32_t len,
 
 /* Finish off a user options packet and send it along */
 int send_user_options(ship_t *c);
+
+/* Send a packet containing a user's Blue Burst options */
+int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
+                 sylverant_bb_db_opts_t *opts);
 
 #endif /* !SHIPGATE_H */

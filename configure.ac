@@ -45,6 +45,9 @@ AC_CONFIG_SRCDIR([src/packets.c])
 # Checks for programs.
 AC_PROG_CC
 
+AM_ICONV
+AM_ICONV_LINK
+
 # Checks for libraries.
 PKG_CHECK_MODULES([libxml2], [libxml-2.0 >= 2.7])
 CFLAGS="$CFLAGS $libxml2_CFLAGS"
