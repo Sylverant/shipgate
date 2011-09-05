@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
     fclose(r);
 
     /* Connect to the database. */
-    if(sylverant_read_config(&cfg)) {
+    if(sylverant_read_config(NULL, &cfg)) {
         fprintf(stderr, "Couldn't read database configuration!\n");
         exit(EXIT_FAILURE);
     }

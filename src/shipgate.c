@@ -45,6 +45,10 @@ sylverant_dbconn_t conn;
 iconv_t ic_utf8_to_utf16;
 iconv_t ic_utf16_to_utf8;
 
+int shutting_down = 0;
+
+static const char *config_file = NULL;
+static const char *custom_dir = NULL;
 static int dont_daemonize = 0;
 
 /* Print information about this program to stdout. */
@@ -71,6 +75,9 @@ static void print_help(const char *bin) {
            "--verbose       Log many messages that might help debug a problem\n"
            "--quiet         Only log warning and error messages\n"
            "--reallyquiet   Only log error messages\n"
+           "-C configfile   Use the specified configuration instead of the\n"
+           "                default one.\n"
+           "-D directory    Use the specified directory as the root\n"
            "--nodaemon      Don't daemonize\n"
            "--help          Print this help and exit\n\n"
            "Note that if more than one verbosity level is specified, the last\n"
@@ -95,6 +102,14 @@ static void parse_command_line(int argc, char *argv[]) {
         else if(!strcmp(argv[i], "--reallyquiet")) {
             debug_set_threshold(DBG_ERROR);
         }
+        else if(!strcmp(argv[i], "-C")) {
+            /* Save the config file's name. */
+            config_file = argv[++i];
+        }
+        else if(!strcmp(argv[i], "-D")) {
+            /* Save the custom dir */
+            custom_dir = argv[++i];
+        }
         else if(!strcmp(argv[i], "--nodaemon")) {
             dont_daemonize = 1;
         }
@@ -112,11 +127,13 @@ static void parse_command_line(int argc, char *argv[]) {
 
 /* Load the configuration file and print out parameters with DBG_LOG. */
 static void load_config() {
-    if(sylverant_read_config(&cfg)) {
+    if(sylverant_read_config(config_file, &cfg)) {
         printf("Cannot load configuration!\n");
         exit(EXIT_FAILURE);
     }
+}
 
+static void open_db() {
     debug(DBG_LOG, "Connecting to the database...\n");
 
     if(sylverant_db_open(&cfg->dbcfg, &conn)) {
@@ -158,6 +175,10 @@ void run_server(int sock, int sock6) {
         timeout.tv_sec = 30;
         timeout.tv_usec = 0;
         now = time(NULL);
+
+        if(shutting_down) {
+            return;
+        }
 
         /* Fill the sockets into the fd_set so we can use select below. */
         i = TAILQ_FIRST(&ships);
@@ -393,11 +414,29 @@ static int open_sock(int family) {
 
 int main(int argc, char *argv[]) {
     int sock, sock6;
+    char *initial_path;
+    long size;
 
     /* Parse the command line and read our configuration. */
     parse_command_line(argc, argv);
 
-    chdir(sylverant_directory);
+    /* Save the initial path. */
+    size = pathconf(".", _PC_PATH_MAX);
+    if(!(initial_path = (char *)malloc(size))) {
+        debug(DBG_WARN, "Out of memory, bailing out!\n");
+    }
+    else if(!getcwd(initial_path, size)) {
+        debug(DBG_WARN, "Cannot save initial path, Restart may not work!\n");
+    }
+
+    load_config();
+
+    if(!custom_dir) {
+        chdir(sylverant_directory);
+    }
+    else {
+        chdir(custom_dir);
+    }
 
     /* If we're still alive and we're supposed to daemonize, do it now. */
     if(!dont_daemonize) {
@@ -410,7 +449,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    load_config();
+    open_db();
 
     /* Create the iconv contexts we'll use */
     ic_utf8_to_utf16 = iconv_open("UTF-16LE", "UTF-8");
@@ -445,6 +484,18 @@ int main(int argc, char *argv[]) {
     sylverant_free_config(cfg);
     iconv_close(ic_utf8_to_utf16);
     iconv_close(ic_utf16_to_utf8);
+
+    /* Restart if we're supposed to be doing so. */
+    if(shutting_down == 2) {
+        chdir(initial_path);
+        free(initial_path);
+        execvp(argv[0], argv);
+
+        /* This should never be reached, since execvp should replace us. If we
+           get here, there was a serious problem... */
+        debug(DBG_ERROR, "Restart failed: %s\n", strerror(errno));
+        return -1;
+    }
 
     return 0;
 }
