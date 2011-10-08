@@ -1,7 +1,7 @@
 dnl
 dnl This file is part of Sylverant PSO Server.
 dnl
-dnl Copyright (C) 2009 Lawrence Sebald
+dnl Copyright (C) 2009, 2011 Lawrence Sebald
 dnl
 dnl This program is free software: you can redistribute it and/or modify
 dnl it under the terms of the GNU Affero General Public License version 3
@@ -53,6 +53,10 @@ PKG_CHECK_MODULES([libxml2], [libxml-2.0 >= 2.7])
 CFLAGS="$CFLAGS $libxml2_CFLAGS"
 LIBS="$LIBS $libxml2_LIBS"
 
+PKG_CHECK_MODULES([gnutls], [gnutls >= 2.0])
+CFLAGS="$CFLAGS $gnutls_CFLAGS"
+LIBS="$LIBS $gnutls_LIBS"
+
 MYSQL_CLIENT()
 AC_CHECK_LIB([crypto], [RC4], , AC_MSG_ERROR([libcrypto is required!]))
 AC_CHECK_LIB([sylverant], [sylverant_read_config], , AC_MSG_ERROR([libsylverant is required!]))
@@ -69,6 +73,9 @@ AC_TYPE_UINT16_T
 AC_TYPE_UINT32_T
 AC_TYPE_UINT8_T
 AC_C_BIGENDIAN
+AC_CHECK_SIZEOF([int]) 
+AC_CHECK_SIZEOF([long int]) 
+AC_CHECK_SIZEOF([void*]) 
 
 # Checks for library functions.
 AC_FUNC_MALLOC

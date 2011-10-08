@@ -26,6 +26,15 @@
 
 static uint8_t sendbuf[65536];
 
+static ssize_t ship_send(ship_t *c, const void *buffer, size_t len) {
+    if(c->is_tls) {
+        return gnutls_record_send(c->session, buffer, len);
+    }
+    else {
+        return send(c->sock, buffer, len, 0);
+    }
+}
+
 /* Send a raw packet away. */
 static int send_raw(ship_t *c, int len) {
     ssize_t rv, total = 0;
@@ -34,7 +43,7 @@ static int send_raw(ship_t *c, int len) {
     /* Keep trying until the whole thing's sent. */
     if(!c->sendbuf_cur) {
         while(total < len) {
-            rv = send(c->sock, sendbuf + total, len - total, 0);
+            rv = ship_send(c, sendbuf + total, len - total);
 
             if(rv == -1 && errno != EAGAIN) {
                 return -1;
@@ -85,8 +94,13 @@ static int send_crypt(ship_t *c, int len) {
         return -1;
     }
 
-    if(c->key_set)
+    if(!c->is_tls && c->key_set) {
         RC4(&c->gate_key, len, sendbuf, sendbuf);
+    }
+    else if(c->is_tls) {
+        shipgate_hdr_new_t *hdr = (shipgate_hdr_new_t *)sendbuf;
+        hdr->version = hdr->reserved = 0;
+    }
 
     return send_raw(c, len);
 }
@@ -254,7 +268,6 @@ int forward_bb(ship_t *c, bb_pkt_hdr_t *bb, uint32_t sender, uint32_t gc,
     /* Send the packet away */
     return send_crypt(c, full_len);
 }
-
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c) {

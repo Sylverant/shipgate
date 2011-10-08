@@ -28,6 +28,9 @@
 #include <openssl/rc4.h>
 #include <openssl/sha.h>
 
+#include <gnutls/gnutls.h>
+#include <gnutls/x509.h>
+
 #include <sylverant/debug.h>
 #include <sylverant/database.h>
 #include <sylverant/mtwist.h>
@@ -47,6 +50,10 @@ extern sylverant_dbconn_t conn;
 /* iconv contexts */
 extern iconv_t ic_utf8_to_utf16;
 extern iconv_t ic_utf16_to_utf8;
+
+/* GnuTLS data... */
+extern gnutls_certificate_credentials_t tls_cred;
+extern gnutls_priority_t tls_prio;
 
 static uint8_t recvbuf[65536];
 
@@ -111,6 +118,7 @@ ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size) {
 
     if(!rv) {
         perror("malloc");
+        close(sock);
         return NULL;
     }
 
@@ -138,12 +146,173 @@ ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size) {
     return rv;
 }
 
+ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
+    ship_t *rv;
+    int tmp;
+    unsigned int peer_status, cert_list_size;
+    gnutls_x509_crt_t cert;
+    const gnutls_datum_t *cert_list;
+    uint8_t hash[20];
+    size_t sz = 20;
+    char query[256], fingerprint[40];
+    void *result;
+    char **row;
+
+    rv = (ship_t *)malloc(sizeof(ship_t));
+
+    if(!rv) {
+        perror("malloc");
+        close(sock);
+        return NULL;
+    }
+
+    memset(rv, 0, sizeof(ship_t));
+    
+    /* Store basic parameters in the client structure. */
+    rv->is_tls = 1;
+    rv->sock = sock;
+    rv->last_message = time(NULL);
+    memcpy(&rv->conn_addr, addr, size);
+
+    /* Create the TLS session */
+    gnutls_init(&rv->session, GNUTLS_SERVER);
+    gnutls_priority_set(rv->session, tls_prio);
+    gnutls_credentials_set(rv->session, GNUTLS_CRD_CERTIFICATE, tls_cred);
+
+    gnutls_certificate_server_set_request(rv->session, GNUTLS_CERT_REQUIRE);
+
+#if (SIZEOF_INT != SIZEOF_VOIDP) && (SIZEOF_LONG_INT == SIZEOF_VOIDP)
+    gnutls_transport_set_ptr(rv->session, (gnutls_transport_ptr_t)((long)sock));
+#else
+    gnutls_transport_set_ptr(rv->session, (gnutls_transport_ptr_t)sock);
+#endif
+
+    /* Do the TLS handshake */
+    tmp = gnutls_handshake(rv->session);
+
+    if(tmp < 0) {
+        close(sock);
+        gnutls_deinit(rv->session);
+        free(rv);
+        debug(DBG_WARN, "TLS Handshake failed: %s\n", gnutls_strerror(tmp));
+        return NULL;
+    }
+
+    /* Verify that the peer has a valid certificate */
+    tmp = gnutls_certificate_verify_peers2(rv->session, &peer_status);
+
+    if(tmp < 0) {
+        debug(DBG_WARN, "Error validating peer: %s\n", gnutls_strerror(tmp));
+        goto err;
+    }
+
+    /* Check whether or not the peer is trusted... */
+    if(peer_status & GNUTLS_CERT_INVALID) {
+        debug(DBG_WARN, "Untrusted peer connection, reason below:\n");
+
+        if(peer_status & GNUTLS_CERT_SIGNER_NOT_FOUND)
+            debug(DBG_WARN, "No issuer found\n");
+        if(peer_status & GNUTLS_CERT_SIGNER_NOT_CA)
+            debug(DBG_WARN, "Issuer is not a CA\n");
+        if(peer_status & GNUTLS_CERT_NOT_ACTIVATED)
+            debug(DBG_WARN, "Certificate not yet activated\n");
+        if(peer_status & GNUTLS_CERT_EXPIRED)
+            debug(DBG_WARN, "Certificate Expired\n");
+        if(peer_status & GNUTLS_CERT_REVOKED)
+            debug(DBG_WARN, "Certificate Revoked\n");
+        if(peer_status & GNUTLS_CERT_INSECURE_ALGORITHM)
+            debug(DBG_WARN, "Insecure certificate signature\n");
+
+        goto err;
+    }
+
+    /* Verify that we know the peer */
+    if(gnutls_certificate_type_get(rv->session) != GNUTLS_CRT_X509) {
+        debug(DBG_WARN, "Invalid certificate type!\n");
+        goto err;
+    }
+
+    tmp = gnutls_x509_crt_init(&cert);
+    if(tmp < 0) {
+        debug(DBG_WARN, "Cannot init certificate: %s\n", gnutls_strerror(tmp));
+        goto err;
+    }
+
+    /* Get the peer's certificate */
+    cert_list = gnutls_certificate_get_peers(rv->session, &cert_list_size);
+    if(cert_list == NULL) {
+        debug(DBG_WARN, "No certs found for connection!?\n");
+        goto err;
+    }
+
+    tmp = gnutls_x509_crt_import(cert, &cert_list[0], GNUTLS_X509_FMT_DER);
+    if(tmp < 0) {
+        debug(DBG_WARN, "Cannot parse certificate: %s\n", gnutls_strerror(tmp));
+        goto err;
+    }
+
+    /* Get the SHA1 fingerprint */
+    tmp = gnutls_x509_crt_get_fingerprint(cert, GNUTLS_DIG_SHA1, hash, &sz);
+    if(tmp < 0) {
+        debug(DBG_WARN, "Cannot read hash: %s\n", gnutls_strerror(tmp));
+        goto err;
+    }
+
+    /* Figure out what ship is connecting by the fingerprint */
+    sylverant_db_escape_str(&conn, fingerprint, (char *)hash, 20);
+
+    sprintf(query, "SELECT idx FROM ship_data WHERE sha1_fingerprint='%s'",
+           fingerprint);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query the database\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto err;
+    }
+    
+    if((result = sylverant_db_result_store(&conn)) == NULL ||
+       (row = sylverant_db_result_fetch(result)) == NULL) {
+        debug(DBG_WARN, "Unknown SHA1 fingerprint");
+        goto err;
+    }
+
+    /* Store the ship ID */
+    rv->key_idx = atoi(row[0]);
+    sylverant_db_result_free(result);
+    gnutls_x509_crt_deinit(cert);
+    
+    /* Send the client the welcome packet, or die trying. */
+    if(send_welcome(rv)) {
+        gnutls_bye(rv->session, GNUTLS_SHUT_RDWR);
+        close(sock);
+        gnutls_deinit(rv->session);
+        free(rv);
+        return NULL;
+    }
+
+    /* Insert it at the end of our list, and we're done. */
+    TAILQ_INSERT_TAIL(&ships, rv, qentry);
+    return rv;
+
+err:
+    gnutls_bye(rv->session, GNUTLS_SHUT_RDWR);
+    close(sock);
+    gnutls_deinit(rv->session);
+    free(rv);
+    return NULL;
+}
+
 /* Destroy a connection, closing the socket and removing it from the list. */
 void destroy_connection(ship_t *c) {
     char query[256];
     ship_t *i;
 
-    debug(DBG_LOG, "Closing connection with %s\n", c->name);
+    if(c->name[0]) {
+        debug(DBG_LOG, "Closing connection with %s\n", c->name);
+    }
+    else {
+        debug(DBG_LOG, "Closing connection with unknown ship\n");
+    }
 
     TAILQ_REMOVE(&ships, c, qentry);
 
@@ -169,6 +338,14 @@ void destroy_connection(ship_t *c) {
         if(sylverant_db_query(&conn, query)) {
             debug(DBG_ERROR, "Couldn't clear %s online_clients\n", c->name);
         }
+    }
+
+    /* If its a TLS connection, clean that up */
+    if(c->is_tls) {
+        gnutls_bye(c->session, GNUTLS_SHUT_RDWR);
+        close(c->sock);
+        gnutls_deinit(c->session);
+        c->sock = -1;
     }
 
     /* Clean up the ship's structure. */
@@ -472,6 +649,114 @@ static int handle_shipgate_login6(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     return 0;
 }
 
+static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
+    char query[256];
+    ship_t *j;
+    void *result;
+    char **row;
+    uint32_t pver = c->proto_ver = ntohl(pkt->proto_ver);
+    uint16_t menu_code = ntohs(pkt->menu_code);
+    int ship_number;
+    uint64_t ip6_hi, ip6_lo;
+
+    /* Check the protocol version for support (TLS first supported in v10) */
+    if(pver < 10 || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
+        debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
+
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_PROTO, NULL, 0);
+        return -1;
+    }
+
+    /* Attempt to grab the key for this ship. */
+    sprintf(query, "SELECT main_menu, ship_number FROM ship_data WHERE "
+            "idx='%u'", c->key_idx);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query the database\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, NULL, 0);
+        return -1;
+    }
+
+    if((result = sylverant_db_result_store(&conn)) == NULL ||
+       (row = sylverant_db_result_fetch(result)) == NULL) {
+        debug(DBG_WARN, "Invalid index %d\n", c->key_idx);
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_KEY, NULL, 0);
+        return -1;
+    }
+
+    /* Check the menu code for validity */
+    if(menu_code && (!isalpha(menu_code & 0xFF) | !isalpha(menu_code >> 8))) {
+        debug(DBG_WARN, "Bad menu code for id: %d\n", c->key_idx);
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_BAD_MENU, NULL, 0);
+        return -1;
+    }
+
+    /* If the ship requests the main menu and they aren't allowed there, bail */
+    if(!menu_code && !atoi(row[0])) {
+        debug(DBG_WARN, "Invalid menu code for id: %d\n", c->key_idx);
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_LOGIN_INVAL_MENU, NULL, 0);
+        return -1;
+    }
+
+    /* Grab the key from the result */
+    ship_number = atoi(row[1]);
+    sylverant_db_result_free(result);
+
+    /* Fill in the ship structure */
+    c->remote_addr = pkt->ship_addr4;
+    memcpy(&c->remote_addr6, pkt->ship_addr6, 16);
+    c->port = ntohs(pkt->ship_port);
+    c->clients = ntohs(pkt->clients);
+    c->games = ntohs(pkt->games);
+    c->flags = ntohl(pkt->flags);
+    c->menu_code = menu_code;
+    memcpy(c->name, pkt->name, 12);
+    c->ship_number = ship_number;
+
+    pack_ipv6(&c->remote_addr6, &ip6_hi, &ip6_lo);
+
+    sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
+            "ship_id, gm_only, games, menu_code, flags, ship_number, "
+            "ship_ip6_high, ship_ip6_low, protocol_ver) VALUES ('%s', '%hu', "
+            "'%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u', '%d', '%llu', "
+            "'%llu', '%u')", c->name, c->clients, ntohl(c->remote_addr),
+            c->port, 0, c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY), c->games,
+            c->menu_code, c->flags, ship_number, (unsigned long long)ip6_hi,
+            (unsigned long long)ip6_lo, pver);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
+              c->name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, NULL, 0);
+        return -1;
+    }
+
+    /* Hooray for misusing functions! */
+    if(send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
+        return -1;
+    }
+
+    /* Send a status packet to each of the ships. */
+    TAILQ_FOREACH(j, &ships, qentry) {
+        send_ship_status(j, c, 1);
+
+        /* Send this ship to the new ship, as long as that wasn't done just
+           above here. */
+        if(j != c) {
+            send_ship_status(c, j, 1);
+        }
+    }
+
+    return 0;
+}
 
 /* Handle a ship's update counters packet. */
 static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
@@ -1364,8 +1649,7 @@ static int handle_bb(ship_t *c, shipgate_fw_9_pkt *pkt) {
 /* Handle a ship's save character data packet. */
 static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
     uint32_t gc, slot;
-    uint16_t len = ntohs(pkt->hdr.pkt_unc_len) -
-        sizeof(shipgate_char_data_pkt);
+    uint16_t len = ntohs(pkt->hdr.pkt_len) - sizeof(shipgate_char_data_pkt);
     static char query[16384];
 
     gc = ntohl(pkt->guildcard);
@@ -2600,12 +2884,21 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_shipgate_login(c, (shipgate_login_reply_pkt *)pkt);
 
         case SHDR_TYPE_LOGIN6:
+        {
+            shipgate_login6_reply_pkt *p = (shipgate_login6_reply_pkt *)pkt;
+
             if(!(flags & SHDR_RESPONSE)) {
                 debug(DBG_WARN, "Client sent invalid login response\n");
                 return -1;
             }
 
-            return handle_shipgate_login6(c, (shipgate_login6_reply_pkt *)pkt);
+            if(c->is_tls) {
+                return handle_shipgate_login6t(c, p);
+            }
+            else {
+                return handle_shipgate_login6(c, p);
+            }
+        }
 
         case SHDR_TYPE_COUNT:
             return handle_count(c, (shipgate_cnt_pkt *)pkt);
@@ -2690,6 +2983,15 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     }
 }
 
+static ssize_t ship_recv(ship_t *c, void *buffer, size_t len) {
+    if(c->is_tls) {
+        return gnutls_record_recv(c->session, buffer, len);
+    }
+    else {
+        return recv(c->sock, buffer, len, 0);
+    }
+}
+
 /* Handle incoming data to the shipgate. */
 int handle_pkt(ship_t *c) {
     ssize_t sz;
@@ -2706,10 +3008,10 @@ int handle_pkt(ship_t *c) {
     }
 
     /* Attempt to read, and if we don't get anything, punt. */
-    if((sz = recv(c->sock, recvbuf + c->recvbuf_cur, 65536 - c->recvbuf_cur,
-                  0)) <= 0) {
+    if((sz = ship_recv(c, recvbuf + c->recvbuf_cur,
+                       65536 - c->recvbuf_cur)) <= 0) {
         if(sz == -1) {
-            perror("recv");
+            perror("ship_recv");
         }
 
         return -1;
@@ -2725,7 +3027,7 @@ int handle_pkt(ship_t *c) {
             /* Grab the packet header so we know what exactly we're looking
                for, in terms of packet length. */
             if(!c->hdr_read) {
-                if(c->key_set) {
+                if(!c->is_tls && c->key_set) {
                     RC4(&c->ship_key, 8, rbp, (unsigned char *)&c->pkt);
                 }
                 else {
@@ -2745,7 +3047,7 @@ int handle_pkt(ship_t *c) {
             /* Do we have the whole packet? */
             if(sz >= (ssize_t)pkt_sz) {
                 /* Yes, we do, decrypt it. */
-                if(c->key_set) {
+                if(!c->is_tls && c->key_set) {
                     RC4(&c->ship_key, pkt_sz - 8, rbp + 8, rbp + 8);
                 }
 

@@ -27,6 +27,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <gnutls/gnutls.h>
+
 #include <sylverant/config.h>
 #include <sylverant/debug.h>
 #include <sylverant/database.h>
@@ -44,6 +46,11 @@ sylverant_dbconn_t conn;
 /* Various iconv contexts we'll use */
 iconv_t ic_utf8_to_utf16;
 iconv_t ic_utf16_to_utf8;
+
+/* GnuTLS data... */
+gnutls_certificate_credentials_t tls_cred;
+gnutls_priority_t tls_prio;
+static gnutls_dh_params_t dh_params;
 
 int shutting_down = 0;
 
@@ -133,6 +140,42 @@ static void load_config() {
     }
 }
 
+static void init_gnutls() {
+    int rv;
+
+    /* Do the initial init */
+    gnutls_global_init();
+
+    /* Set up our credentials */
+    // XXX: Check return values!
+    rv = gnutls_certificate_allocate_credentials(&tls_cred);
+    rv = gnutls_certificate_set_x509_trust_file(tls_cred, cfg->shipgate_ca,
+                                                GNUTLS_X509_FMT_PEM);
+    rv = gnutls_certificate_set_x509_key_file(tls_cred, cfg->shipgate_cert,
+                                              cfg->shipgate_key,
+                                              GNUTLS_X509_FMT_PEM);
+
+    /* Generate Diffie-Hellman parameters */
+    debug(DBG_LOG, "Generating Diffie-Hellman parameters...\n"
+          "This may take a little while.\n");
+    rv = gnutls_dh_params_init(&dh_params);
+    rv = gnutls_dh_params_generate2(dh_params, 1024);
+    debug(DBG_LOG, "Done!\n");
+
+    rv = gnutls_priority_init(&tls_prio, "NORMAL:+COMP-DEFLATE:"
+                              "%SAFE_RENEGOTIATION",
+                              NULL);
+
+    gnutls_certificate_set_dh_params(tls_cred, dh_params);
+}
+
+static void cleanup_gnutls() {
+    gnutls_certificate_free_credentials(tls_cred);
+    gnutls_priority_deinit(tls_prio);
+    gnutls_global_deinit();
+}
+    
+
 static void open_db() {
     debug(DBG_LOG, "Connecting to the database...\n");
 
@@ -154,7 +197,7 @@ static void open_db() {
     }
 }
 
-void run_server(int sock, int sock6) {
+void run_server(int sock, int sock6, int tsock, int tsock6) {
     int nfds;
     struct sockaddr_in addr;
     struct sockaddr_in6 addr6;
@@ -204,6 +247,14 @@ void run_server(int sock, int sock6) {
             }
 
             nfds = nfds > i->sock ? nfds : i->sock;
+
+            /* Check GnuTLS' buffer for the connection if its on TLS. */
+            if(i->is_tls && gnutls_record_check_pending(i->session)) {
+                if(handle_pkt(i)) {
+                    i->disconnected = 1;
+                }
+            }
+
             i = tmp;
         }
 
@@ -218,9 +269,23 @@ void run_server(int sock, int sock6) {
             nfds = nfds > sock6 ? nfds : sock6;
         }
 
+        if(tsock > -1) {
+            FD_SET(tsock, &readfds);
+            nfds = nfds > tsock ? nfds : tsock;
+        }
+
+        if(tsock6 > -1) {
+            FD_SET(tsock6, &readfds);
+            nfds = nfds > tsock6 ? nfds : tsock6;
+        }        
+
         if(select(nfds + 1, &readfds, &writefds, NULL, &timeout) > 0) {
             /* Check each ship's socket for activity. */
             TAILQ_FOREACH(i, &ships, qentry) {
+                if(i->disconnected) {
+                    continue;
+                }
+
                 /* Check if this ship was trying to send us anything. */
                 if(FD_ISSET(i->sock, &readfds)) {
                     if(handle_pkt(i)) {
@@ -282,7 +347,6 @@ void run_server(int sock, int sock6) {
                 }
 
                 if(!create_connection(asock, (struct sockaddr *)&addr, len)) {
-                    close(asock);
                     continue;
                 }
 
@@ -306,7 +370,6 @@ void run_server(int sock, int sock6) {
                 }
 
                 if(!create_connection(asock, (struct sockaddr *)&addr6, len)) {
-                    close(asock);
                     continue;
                 }
 
@@ -317,6 +380,54 @@ void run_server(int sock, int sock6) {
                 }
 
                 debug(DBG_LOG, "Accepted ship connection from %s\n", ipstr);
+            }
+
+            /* Check the listening port to see if we have a ship. */
+            if(tsock > -1 && FD_ISSET(tsock, &readfds)) {
+                len = sizeof(struct sockaddr_in);
+
+                if((asock = accept(tsock, (struct sockaddr *)&addr,
+                                   &len)) < 0) {
+                    perror("accept");
+                    continue;
+                }
+
+                if(!create_connection_tls(asock, (struct sockaddr *)&addr,
+                                          len)) {
+                    continue;
+                }
+
+                if(!inet_ntop(AF_INET, &addr.sin_addr, ipstr,
+                              INET6_ADDRSTRLEN)) {
+                    perror("inet_ntop");
+                    continue;
+                }
+
+                debug(DBG_LOG, "Accepted TLS ship connection from %s\n", ipstr);
+            }
+
+            /* If we have IPv6 support, check it too */
+            if(tsock6 > -1 && FD_ISSET(tsock6, &readfds)) {
+                len = sizeof(struct sockaddr_in6);
+
+                if((asock = accept(tsock6, (struct sockaddr *)&addr6,
+                                   &len)) < 0) {
+                    perror("accept");
+                    continue;
+                }
+
+                if(!create_connection_tls(asock, (struct sockaddr *)&addr6,
+                                          len)) {
+                    continue;
+                }
+
+                if(!inet_ntop(AF_INET6, &addr6.sin6_addr, ipstr,
+                              INET6_ADDRSTRLEN)) {
+                    perror("inet_ntop");
+                    continue;
+                }
+
+                debug(DBG_LOG, "Accepted TLS ship connection from %s\n", ipstr);
             }
         }
     }
@@ -336,7 +447,7 @@ static void open_log() {
     debug_set_file(dbgfp);
 }
 
-static int open_sock(int family) {
+static int open_sock(int family, uint16_t port) {
     int sock, val;
     struct sockaddr_in addr;
     struct sockaddr_in6 addr6;
@@ -357,11 +468,12 @@ static int open_sock(int family) {
            anyway... */
     }
 
-    if(family == PF_INET) {
+    if(family == AF_INET) {
+        memset(&addr, 0, sizeof(struct sockaddr_in));
+
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(3455);
-        memset(addr.sin_zero, 0, 8);
+        addr.sin_port = htons(port);
         
         if(bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in))) {
             perror("bind");
@@ -375,7 +487,7 @@ static int open_sock(int family) {
             return -1;
         }
     }
-    else if(family == PF_INET6) {
+    else if(family == AF_INET6) {
         /* Since we create separate sockets for IPv4 and IPv6, make this one
            support ONLY IPv6. */
         val = 1;
@@ -389,7 +501,7 @@ static int open_sock(int family) {
 
         addr6.sin6_family = AF_INET6;
         addr6.sin6_addr = in6addr_any;
-        addr6.sin6_port = htons(3455);
+        addr6.sin6_port = htons(port);
 
         if(bind(sock, (struct sockaddr *)&addr6, sizeof(struct sockaddr_in6))) {
             perror("bind");
@@ -413,7 +525,7 @@ static int open_sock(int family) {
 }
 
 int main(int argc, char *argv[]) {
-    int sock, sock6;
+    int sock = -1, sock6 = -1, tsock = -1, tsock6 = -1;
     char *initial_path;
     long size;
 
@@ -449,7 +561,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    open_db();
+    /* Initialize GnuTLS */
+    init_gnutls();
 
     /* Create the iconv contexts we'll use */
     ic_utf8_to_utf16 = iconv_open("UTF-16LE", "UTF-8");
@@ -465,25 +578,39 @@ int main(int argc, char *argv[]) {
     }
 
     /* Create the socket and listen for connections. */
-    sock = open_sock(PF_INET);
-    sock6 = open_sock(PF_INET6);
+    sock = open_sock(AF_INET, 3455);
+    sock6 = open_sock(AF_INET6, 3455);
 
     if(sock == -1 && sock6 == -1) {
         debug(DBG_ERROR, "Couldn't create IPv4 or IPv6 socket!\n");
-        sylverant_db_close(&conn);
         exit(EXIT_FAILURE);
     }
 
+    /* Create the TLS sockets */
+    tsock = open_sock(AF_INET, cfg->shipgate_port);
+    tsock6 = open_sock(AF_INET6, cfg->shipgate_port);
+
+    if(tsock == -1 && tsock6 == -1) {
+        debug(DBG_ERROR, "Couldn't create IPv4 or IPv6 TLS socket!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Clean up the DB now that we've done everything else that might fail... */
+    open_db();
+
     /* Run the shipgate server. */
-    run_server(sock, sock6);
+    run_server(sock, sock6, tsock, tsock6);
 
     /* Clean up. */
     close(sock);
     close(sock6);
-    sylverant_db_close(&conn);
-    sylverant_free_config(cfg);
+    close(tsock);
+    close(tsock6);
     iconv_close(ic_utf8_to_utf16);
     iconv_close(ic_utf16_to_utf8);
+    sylverant_db_close(&conn);
+    cleanup_gnutls();
+    sylverant_free_config(cfg);
 
     /* Restart if we're supposed to be doing so. */
     if(shutting_down == 2) {
