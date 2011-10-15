@@ -162,19 +162,17 @@ static void init_gnutls() {
     rv = gnutls_dh_params_generate2(dh_params, 1024);
     debug(DBG_LOG, "Done!\n");
 
-    rv = gnutls_priority_init(&tls_prio, "NORMAL:+COMP-DEFLATE:"
-                              "%SAFE_RENEGOTIATION",
-                              NULL);
+    rv = gnutls_priority_init(&tls_prio, "NORMAL:+COMP-DEFLATE", NULL);
 
     gnutls_certificate_set_dh_params(tls_cred, dh_params);
 }
 
 static void cleanup_gnutls() {
+    gnutls_dh_params_deinit(dh_params);
     gnutls_certificate_free_credentials(tls_cred);
     gnutls_priority_deinit(tls_prio);
     gnutls_global_deinit();
 }
-    
 
 static void open_db() {
     debug(DBG_LOG, "Connecting to the database...\n");
