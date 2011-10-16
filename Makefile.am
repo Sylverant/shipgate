@@ -19,10 +19,8 @@ ACLOCAL_AMFLAGS = -I m4
 
 LIBS += $(MYSQL_LIBS)
 
-bin_PROGRAMS = shipgate shipkey_gen
+bin_PROGRAMS = shipgate
 shipgate_SOURCES = src/packets.c src/ship.c src/ship.h src/ship_packets.h \
                    src/shipgate.c src/shipgate.h
-
-shipkey_gen_SOURCES = src/shipkey_gen.c
 
 datarootdir = @datarootdir@
