@@ -27,12 +27,7 @@
 static uint8_t sendbuf[65536];
 
 static ssize_t ship_send(ship_t *c, const void *buffer, size_t len) {
-    if(c->is_tls) {
-        return gnutls_record_send(c->session, buffer, len);
-    }
-    else {
-        return send(c->sock, buffer, len, 0);
-    }
+    return gnutls_record_send(c->session, buffer, len);
 }
 
 /* Send a raw packet away. */
@@ -94,71 +89,7 @@ static int send_crypt(ship_t *c, int len) {
         return -1;
     }
 
-    if(!c->is_tls && c->key_set) {
-        RC4(&c->gate_key, len, sendbuf, sendbuf);
-    }
-    else if(c->is_tls) {
-        shipgate_hdr_new_t *hdr = (shipgate_hdr_new_t *)sendbuf;
-        hdr->version = hdr->reserved = 0;
-    }
-
     return send_raw(c, len);
-}
-
-static int forward_dc_old(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender) {
-    shipgate_fw_pkt *pkt = (shipgate_fw_pkt *)sendbuf;
-    int dc_len = LE16(dc->pkt_len);
-    int full_len = sizeof(shipgate_fw_pkt) + dc_len;
-
-    /* Round up the packet size, if needed. */
-    if(full_len & 0x07)
-        full_len = (full_len + 8) & 0xFFF8;
-
-    /* Scrub the buffer */
-    memset(pkt, 0, full_len);
-
-    /* Fill in the shipgate header */
-    pkt->hdr.pkt_len = htons(full_len);
-    pkt->hdr.pkt_type = htons(SHDR_TYPE_DC);
-    pkt->hdr.pkt_unc_len = htons(full_len);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
-
-    /* Add the metadata */
-    pkt->ship_id = htonl(sender);
-
-    /* Copy in the packet, unchanged */
-    memcpy(pkt->pkt, dc, dc_len);
-
-    /* Send the packet away */
-    return send_crypt(c, full_len);
-}
-
-static int forward_pc_old(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender) {
-    shipgate_fw_pkt *pkt = (shipgate_fw_pkt *)sendbuf;
-    int pc_len = LE16(pc->pkt_len);
-    int full_len = sizeof(shipgate_fw_pkt) + pc_len;
-
-    /* Round up the packet size, if needed. */
-    if(full_len & 0x07)
-        full_len = (full_len + 8) & 0xFFF8;
-
-    /* Scrub the buffer */
-    memset(pkt, 0, full_len);
-
-    /* Fill in the shipgate header */
-    pkt->hdr.pkt_len = htons(full_len);
-    pkt->hdr.pkt_type = htons(SHDR_TYPE_PC);
-    pkt->hdr.pkt_unc_len = htons(full_len);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
-
-    /* Add the metadata */
-    pkt->ship_id = htonl(sender);
-
-    /* Copy in the packet, unchanged */
-    memcpy(pkt->pkt, pc, pc_len);
-
-    /* Send the packet away */
-    return send_crypt(c, full_len);
 }
 
 int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender,
@@ -167,11 +98,6 @@ int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender,
     int dc_len = LE16(dc->pkt_len);
     int full_len = sizeof(shipgate_fw_9_pkt) + dc_len;
 
-    /* Send the old form to older ships */
-    if(c->proto_ver < 9) {
-        return forward_dc_old(c, dc, sender);
-    }
-
     /* Round up the packet size, if needed. */
     if(full_len & 0x07)
         full_len = (full_len + 8) & 0xFFF8;
@@ -182,8 +108,9 @@ int forward_dreamcast(ship_t *c, dc_pkt_hdr_t *dc, uint32_t sender,
     /* Fill in the shipgate header */
     pkt->hdr.pkt_len = htons(full_len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_DC);
-    pkt->hdr.pkt_unc_len = htons(full_len);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     /* Add the metadata */
     pkt->ship_id = htonl(sender);
@@ -203,11 +130,6 @@ int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender, uint32_t gc,
     int pc_len = LE16(pc->pkt_len);
     int full_len = sizeof(shipgate_fw_9_pkt) + pc_len;
 
-    /* Send the old form to older ships */
-    if(c->proto_ver < 9) {
-        return forward_pc_old(c, pc, sender);
-    }
-
     /* Round up the packet size, if needed. */
     if(full_len & 0x07)
         full_len = (full_len + 8) & 0xFFF8;
@@ -218,8 +140,9 @@ int forward_pc(ship_t *c, dc_pkt_hdr_t *pc, uint32_t sender, uint32_t gc,
     /* Fill in the shipgate header */
     pkt->hdr.pkt_len = htons(full_len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_PC);
-    pkt->hdr.pkt_unc_len = htons(full_len);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     /* Add the metadata */
     pkt->ship_id = htonl(sender);
@@ -239,11 +162,6 @@ int forward_bb(ship_t *c, bb_pkt_hdr_t *bb, uint32_t sender, uint32_t gc,
     int bb_len = LE16(bb->pkt_len);
     int full_len = sizeof(shipgate_fw_9_pkt) + bb_len;
 
-    /* BB support started with proto v9... */
-    if(c->proto_ver < 9) {
-        return 0;
-    }
-
     /* Round up the packet size, if needed. */
     if(full_len & 0x07)
         full_len = (full_len + 8) & 0xFFF8;
@@ -254,8 +172,9 @@ int forward_bb(ship_t *c, bb_pkt_hdr_t *bb, uint32_t sender, uint32_t gc,
     /* Fill in the shipgate header */
     pkt->hdr.pkt_len = htons(full_len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_BB);
-    pkt->hdr.pkt_unc_len = htons(full_len);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     /* Add the metadata */
     pkt->ship_id = htonl(sender);
@@ -279,8 +198,9 @@ int send_welcome(ship_t *c) {
     /* Fill in the header */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_login_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_LOGIN);
-    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_login_pkt));
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     /* Fill in the required message */
     strcpy(pkt->msg, shipgate_login_msg);
@@ -298,41 +218,12 @@ int send_welcome(ship_t *c) {
     return send_raw(c, sizeof(shipgate_login_pkt));
 }
 
-/* Send a ship up/down message to the given ship. */
-static int send_ship_status_old(ship_t *c, ship_t *o, uint16_t status) {
-    shipgate_ship_status_pkt *pkt = (shipgate_ship_status_pkt *)sendbuf;
-
-    /* Scrub the buffer */
-    memset(pkt, 0, sizeof(shipgate_ship_status_pkt));
-
-    /* Fill in the header */
-    pkt->hdr.pkt_len = htons(sizeof(shipgate_ship_status_pkt));
-    pkt->hdr.pkt_type = htons(SHDR_TYPE_SSTATUS);
-    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_ship_status_pkt));
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
-
-    /* Fill in the info */
-    strcpy(pkt->name, o->name);
-    pkt->ship_id = htonl(o->key_idx);
-    pkt->ship_addr = o->remote_addr;
-    pkt->ship_port = htons(o->port);
-    pkt->status = htons(status);
-    pkt->flags = htonl(o->flags);
-    pkt->clients = htons(o->clients);
-    pkt->games = htons(o->games);
-    pkt->menu_code = htons(o->menu_code);
-    pkt->ship_number = (uint8_t)o->ship_number;
-
-    /* Send the packet away */
-    return send_crypt(c, sizeof(shipgate_ship_status_pkt));
-}
-
 int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
     shipgate_ship_status6_pkt *pkt = (shipgate_ship_status6_pkt *)sendbuf;
 
-    /* Fall back on the old version if the ship doesn't support the new form */
-    if(c->proto_ver < 8) {
-        return send_ship_status_old(c, o, status);
+    /* If the ship hasn't finished logging in yet, don't send this. */
+    if(o->name[0] == 0) {
+        return 0;
     }
 
     /* Scrub the buffer */
@@ -341,8 +232,9 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
     /* Fill in the header */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_ship_status6_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_SSTATUS);
-    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_ship_status6_pkt));
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     /* Fill in the info */
     strcpy((char *)pkt->name, o->name);
@@ -368,13 +260,14 @@ int send_ping(ship_t *c, int reply) {
     /* Fill in the header. */
     pkt->pkt_len = htons(sizeof(shipgate_hdr_t));
     pkt->pkt_type = htons(SHDR_TYPE_PING);
-    pkt->pkt_unc_len = htons(sizeof(shipgate_hdr_t));
+    pkt->reserved = 0;
+    pkt->version = 0;
 
     if(reply) {
-        pkt->flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
+        pkt->flags = htons(SHDR_RESPONSE);
     }
     else {
-        pkt->flags = htons(SHDR_NO_DEFLATE);
+        pkt->flags = 0;
     }
 
     /* Send it away. */
@@ -385,16 +278,12 @@ int send_ping(ship_t *c, int reply) {
 int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz) {
     shipgate_char_data_pkt *pkt = (shipgate_char_data_pkt *)sendbuf;
 
-    /* Protocol version 8 and earlier expect exactly 1052 bytes */
-    if(c->proto_ver < 9 && sz != 1052) {
-        return -1;
-    }
-
     /* Fill in the header. */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_char_data_pkt) + sz);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_CREQ);
-    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_char_data_pkt) + sz);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
+    pkt->hdr.flags = htons(SHDR_RESPONSE);
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     /* Fill in the body. */
     pkt->guildcard = htonl(gc);
@@ -417,8 +306,9 @@ int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p) {
     /* Fill in the response. */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_gmlogin_reply_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_GMLOGIN);
-    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_gmlogin_reply_pkt));
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | flags);
+    pkt->hdr.flags = htons(flags);
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     pkt->guildcard = htonl(gc);
     pkt->block = htonl(block);
@@ -437,8 +327,9 @@ int send_counts(ship_t *c, uint32_t ship_id, uint16_t clients, uint16_t games) {
     /* Fill in the response. */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_cnt_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_COUNT);
-    pkt->hdr.pkt_unc_len = htons(sizeof(shipgate_cnt_pkt));
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     pkt->clients = htons(clients);
     pkt->games = htons(games);
@@ -470,8 +361,10 @@ int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
     /* Fill it in */
     pkt->hdr.pkt_len = htons(sz);
     pkt->hdr.pkt_type = htons(type);
-    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
     pkt->hdr.flags = htons(flags);
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
+
     pkt->error_code = htonl(err);
     memcpy(pkt->data, data, data_sz);
 
@@ -483,21 +376,17 @@ int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
                         uint32_t dest_block, uint32_t friend_gc,
                         uint32_t friend_block, uint32_t friend_ship,
                         const char *friend_name, const char *nickname) {
-    shipgate_friend_login_pkt *pkt = (shipgate_friend_login_pkt *)sendbuf;
-
-    /* These were first added in protocol version 2. */
-    if(c->proto_ver < 2) {
-        return 0;
-    }
+    shipgate_friend_login_4_pkt *pkt = (shipgate_friend_login_4_pkt *)sendbuf;
 
     /* Clear the packet */
-    memset(pkt, 0, sizeof(shipgate_friend_login_pkt));
+    memset(pkt, 0, sizeof(shipgate_friend_login_4_pkt));
 
     /* Fill it in */
-    pkt->hdr.pkt_len = htons(sizeof(shipgate_friend_login_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_friend_login_4_pkt));
     pkt->hdr.pkt_type = htons((on ? SHDR_TYPE_FRLOGIN : SHDR_TYPE_FRLOGOUT));
-    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
     pkt->dest_guildcard = htonl(dest_gc);
     pkt->dest_block = htonl(dest_block);
     pkt->friend_guildcard = htonl(friend_gc);
@@ -505,28 +394,15 @@ int send_friend_message(ship_t *c, int on, uint32_t dest_gc,
     pkt->friend_block = htonl(friend_block);
     strcpy(pkt->friend_name, friend_name);
 
-    /* Protocol version 4 brought a slightly newer form that allows nicknames to
-       be assigned to entries. */
-    if(c->proto_ver >= 4) {
-        shipgate_friend_login_4_pkt *pkt2 = (shipgate_friend_login_4_pkt *)pkt;
-
-        pkt2->hdr.pkt_len = htons(sizeof(shipgate_friend_login_4_pkt));
-        pkt2->hdr.pkt_unc_len = pkt2->hdr.pkt_len;
-
-        if(nickname) {
-            strncpy(pkt2->friend_nick, nickname, 32);
-            pkt2->friend_nick[31] = 0;
-        }
-        else {
-            memset(pkt2->friend_nick, 0, 32);
-        }
-
-        return send_crypt(c, sizeof(shipgate_friend_login_4_pkt));
+    if(nickname) {
+        strncpy(pkt->friend_nick, nickname, 32);
+        pkt->friend_nick[31] = 0;
     }
     else {
-        /* Send it away */
-        return send_crypt(c, sizeof(shipgate_friend_login_pkt));
+        memset(pkt->friend_nick, 0, 32);
     }
+
+    return send_crypt(c, sizeof(shipgate_friend_login_4_pkt));
 }
 
 /* Send a kick packet */
@@ -534,19 +410,15 @@ int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
               const char *reason) {
     shipgate_kick_pkt *pkt = (shipgate_kick_pkt *)sendbuf;
 
-    /* This appeared in v3, so don't send it to earlier ships */
-    if(c->proto_ver < 3) {
-        return 0;
-    }
-
     /* Scrub the buffer */
     memset(pkt, 0, sizeof(shipgate_kick_pkt));
 
     /* Fill in the packet */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_kick_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_KICK);
-    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     pkt->requester = htonl(requester);
     pkt->guildcard = htonl(user);
@@ -567,16 +439,12 @@ int send_friendlist(ship_t *c, uint32_t requester, uint32_t block,
     uint16_t len = sizeof(shipgate_friend_list_pkt) +
         sizeof(friendlist_data_t) * count;
 
-    /* This appeared in v5, so don't send it to earlier version ships */
-    if(c->proto_ver < 5) {
-        return 0;
-    }
-
     /* Fill in the packet */
     pkt->hdr.pkt_len = htons(len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_FRLIST);
-    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
+    pkt->hdr.flags = htons(SHDR_RESPONSE);
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     pkt->requester = htonl(requester);
     pkt->block = htonl(block);
@@ -594,16 +462,12 @@ int send_global_msg(ship_t *c, uint32_t requester, const char *text,
     shipgate_global_msg_pkt *pkt = (shipgate_global_msg_pkt *)sendbuf;
     uint16_t len = sizeof(shipgate_global_msg_pkt) + text_len;
 
-    /* This appeared in v5, so don't send it to earlier version ships */
-    if(c->proto_ver < 5) {
-        return 0;
-    }
-
     /* Fill in the packet */
     pkt->hdr.pkt_len = htons(len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_GLOBALMSG);
-    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     pkt->requester = htonl(requester);
     pkt->reserved = 0;
@@ -620,7 +484,9 @@ void *user_options_begin(uint32_t guildcard, uint32_t block) {
     /* Fill in the packet */
     pkt->hdr.pkt_len = sizeof(shipgate_user_opt_pkt);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_USEROPT);
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
 
     pkt->guildcard = htonl(guildcard);
     pkt->block = htonl(block);
@@ -661,11 +527,6 @@ int send_user_options(ship_t *c) {
     shipgate_user_opt_pkt *pkt = (shipgate_user_opt_pkt *)sendbuf;
     uint16_t len = pkt->hdr.pkt_len;
 
-    /* This appeared in v6, so don't send it to earlier version ships */
-    if(c->proto_ver < 6) {
-        return 0;
-    }
-
     /* Make sure we have something to send, at least */
     if(!pkt->count) {
         return 0;
@@ -684,16 +545,12 @@ int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
                  sylverant_bb_db_opts_t *opts) {
     shipgate_bb_opts_pkt *pkt = (shipgate_bb_opts_pkt *)sendbuf;
 
-    /* This appeared in v9, so don't send it to earlier version ships */
-    if(c->proto_ver < 9) {
-        return 0;
-    }
-
     /* Fill in the packet */
     pkt->hdr.pkt_len = htons(sizeof(shipgate_bb_opts_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_BBOPTS);
-    pkt->hdr.pkt_unc_len = pkt->hdr.pkt_len;
-    pkt->hdr.flags = htons(SHDR_NO_DEFLATE | SHDR_RESPONSE);
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
+    pkt->hdr.flags = htons(SHDR_RESPONSE);
 
     pkt->guildcard = htonl(gc);
     pkt->block = htonl(block);

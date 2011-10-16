@@ -24,7 +24,6 @@
 #include <sys/socket.h>
 #include <sys/queue.h>
 
-#include <openssl/rc4.h>
 #include <gnutls/gnutls.h>
 
 #ifdef PACKED
@@ -33,22 +32,15 @@
 
 #define PACKED __attribute__((packed))
 
-/* The header that is prepended to any packets sent to the shipgate. */
+/* The header that is prepended to any packets sent to the shipgate (new version
+   for protocol v10 and newer). */
 typedef struct shipgate_hdr {
-    uint16_t pkt_len;                   /* Compressed length */
-    uint16_t pkt_type;
-    uint16_t pkt_unc_len;               /* Uncompressed length */
-    uint16_t flags;                     /* Packet flags */
-} PACKED shipgate_hdr_t;
-
-/* New header in protocol version 10 and newer. */
-typedef struct shipgate_hdr_new {
     uint16_t pkt_len;
     uint16_t pkt_type;
     uint8_t version;
     uint8_t reserved;
     uint16_t flags;
-} PACKED shipgate_hdr_new_t;
+} PACKED shipgate_hdr_t;
 
 /* This is used for storing the friendlist data for a friend list request. */
 typedef struct friendlist_data {
@@ -86,10 +78,6 @@ typedef struct ship {
     uint8_t gate_nonce[4];
     time_t last_message;
 
-    RC4_KEY ship_key;
-    RC4_KEY gate_key;
-    int key_set;
-
     unsigned char *recvbuf;
     int recvbuf_cur;
     int recvbuf_size;
@@ -101,7 +89,6 @@ typedef struct ship {
     int sendbuf_size;
     int sendbuf_start;
 
-    int is_tls;
     gnutls_session_t session;
 
     char name[12];
@@ -111,7 +98,6 @@ TAILQ_HEAD(ship_queue, ship);
 extern struct ship_queue ships;
 
 /* Create a new connection, storing it in the list of ships. */
-ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size);
 ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size);
 
 /* Destroy a connection, closing the socket and removing it from the list. */

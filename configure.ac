@@ -58,7 +58,6 @@ CFLAGS="$CFLAGS $gnutls_CFLAGS"
 LIBS="$LIBS $gnutls_LIBS"
 
 MYSQL_CLIENT()
-AC_CHECK_LIB([crypto], [RC4], , AC_MSG_ERROR([libcrypto is required!]))
 AC_CHECK_LIB([sylverant], [sylverant_read_config], , AC_MSG_ERROR([libsylverant is required!]))
 
 MYSQL_LIBS="`mysql_config --libs`"

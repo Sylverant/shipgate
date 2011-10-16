@@ -195,7 +195,7 @@ static void open_db() {
     }
 }
 
-void run_server(int sock, int sock6, int tsock, int tsock6) {
+void run_server(int tsock, int tsock6) {
     int nfds;
     struct sockaddr_in addr;
     struct sockaddr_in6 addr6;
@@ -246,8 +246,8 @@ void run_server(int sock, int sock6, int tsock, int tsock6) {
 
             nfds = nfds > i->sock ? nfds : i->sock;
 
-            /* Check GnuTLS' buffer for the connection if its on TLS. */
-            if(i->is_tls && gnutls_record_check_pending(i->session)) {
+            /* Check GnuTLS' buffer for the connection. */
+            if(gnutls_record_check_pending(i->session)) {
                 if(handle_pkt(i)) {
                     i->disconnected = 1;
                 }
@@ -257,16 +257,6 @@ void run_server(int sock, int sock6, int tsock, int tsock6) {
         }
 
         /* Add the main listening sockets to the read fd_set */
-        if(sock > -1) {
-            FD_SET(sock, &readfds);
-            nfds = nfds > sock ? nfds : sock;
-        }
-
-        if(sock6 > -1) {
-            FD_SET(sock6, &readfds);
-            nfds = nfds > sock6 ? nfds : sock6;
-        }
-
         if(tsock > -1) {
             FD_SET(tsock, &readfds);
             nfds = nfds > tsock ? nfds : tsock;
@@ -333,51 +323,6 @@ void run_server(int sock, int sock6, int tsock, int tsock6) {
                 }
 
                 i = tmp;
-            }
-
-            /* Check the listening port to see if we have a ship. */
-            if(sock > -1 && FD_ISSET(sock, &readfds)) {
-                len = sizeof(struct sockaddr_in);
-
-                if((asock = accept(sock, (struct sockaddr *)&addr, &len)) < 0) {
-                    perror("accept");
-                    continue;
-                }
-
-                if(!create_connection(asock, (struct sockaddr *)&addr, len)) {
-                    continue;
-                }
-
-                if(!inet_ntop(AF_INET, &addr.sin_addr, ipstr,
-                              INET6_ADDRSTRLEN)) {
-                    perror("inet_ntop");
-                    continue;
-                }
-
-                debug(DBG_LOG, "Accepted ship connection from %s\n", ipstr);
-            }
-
-            /* If we have IPv6 support, check it too */
-            if(sock6 > -1 && FD_ISSET(sock6, &readfds)) {
-                len = sizeof(struct sockaddr_in6);
-
-                if((asock = accept(sock6, (struct sockaddr *)&addr6,
-                                   &len)) < 0) {
-                    perror("accept");
-                    continue;
-                }
-
-                if(!create_connection(asock, (struct sockaddr *)&addr6, len)) {
-                    continue;
-                }
-
-                if(!inet_ntop(AF_INET6, &addr6.sin6_addr, ipstr,
-                              INET6_ADDRSTRLEN)) {
-                    perror("inet_ntop");
-                    continue;
-                }
-
-                debug(DBG_LOG, "Accepted ship connection from %s\n", ipstr);
             }
 
             /* Check the listening port to see if we have a ship. */
@@ -523,7 +468,7 @@ static int open_sock(int family, uint16_t port) {
 }
 
 int main(int argc, char *argv[]) {
-    int sock = -1, sock6 = -1, tsock = -1, tsock6 = -1;
+    int tsock = -1, tsock6 = -1;
     char *initial_path;
     long size;
 
@@ -575,16 +520,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    /* Create the socket and listen for connections. */
-    sock = open_sock(AF_INET, 3455);
-    sock6 = open_sock(AF_INET6, 3455);
-
-    if(sock == -1 && sock6 == -1) {
-        debug(DBG_ERROR, "Couldn't create IPv4 or IPv6 socket!\n");
-        exit(EXIT_FAILURE);
-    }
-
-    /* Create the TLS sockets */
+    /* Create the socket and listen for TLS connections. */
     tsock = open_sock(AF_INET, cfg->shipgate_port);
     tsock6 = open_sock(AF_INET6, cfg->shipgate_port);
 
@@ -597,11 +533,9 @@ int main(int argc, char *argv[]) {
     open_db();
 
     /* Run the shipgate server. */
-    run_server(sock, sock6, tsock, tsock6);
+    run_server(tsock, tsock6);
 
     /* Clean up. */
-    close(sock);
-    close(sock6);
     close(tsock);
     close(tsock6);
     iconv_close(ic_utf8_to_utf16);

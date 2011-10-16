@@ -25,9 +25,6 @@
 #include <iconv.h>
 #include <sys/socket.h>
 
-#include <openssl/rc4.h>
-#include <openssl/sha.h>
-
 #include <gnutls/gnutls.h>
 #include <gnutls/x509.h>
 
@@ -110,42 +107,6 @@ static inline void parse_ipv6(uint64_t hi, uint64_t lo, uint8_t buf[16]) {
 }
 
 /* Create a new connection, storing it in the list of ships. */
-ship_t *create_connection(int sock, struct sockaddr *addr, socklen_t size) {
-    ship_t *rv;
-    uint32_t i;
-
-    rv = (ship_t *)malloc(sizeof(ship_t));
-
-    if(!rv) {
-        perror("malloc");
-        close(sock);
-        return NULL;
-    }
-
-    memset(rv, 0, sizeof(ship_t));
-
-    /* Store basic parameters in the client structure. */
-    rv->sock = sock;
-    rv->last_message = time(NULL);
-    memcpy(&rv->conn_addr, addr, size);
-
-    for(i = 0; i < 4; ++i) {
-        rv->ship_nonce[i] = (uint8_t)genrand_int32();
-        rv->gate_nonce[i] = (uint8_t)genrand_int32();
-    }
-
-    /* Send the client the welcome packet, or die trying. */
-    if(send_welcome(rv)) {
-        close(sock);
-        free(rv);
-        return NULL;
-    }
-
-    /* Insert it at the end of our list, and we're done. */
-    TAILQ_INSERT_TAIL(&ships, rv, qentry);
-    return rv;
-}
-
 ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     ship_t *rv;
     int tmp;
@@ -169,7 +130,6 @@ ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     memset(rv, 0, sizeof(ship_t));
     
     /* Store basic parameters in the client structure. */
-    rv->is_tls = 1;
     rv->sock = sock;
     rv->last_message = time(NULL);
     memcpy(&rv->conn_addr, addr, size);
@@ -283,11 +243,7 @@ ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     
     /* Send the client the welcome packet, or die trying. */
     if(send_welcome(rv)) {
-        gnutls_bye(rv->session, GNUTLS_SHUT_RDWR);
-        close(sock);
-        gnutls_deinit(rv->session);
-        free(rv);
-        return NULL;
+        goto err;
     }
 
     /* Insert it at the end of our list, and we're done. */
@@ -340,17 +296,12 @@ void destroy_connection(ship_t *c) {
         }
     }
 
-    /* If its a TLS connection, clean that up */
-    if(c->is_tls) {
+    /* Clean up the TLS resources and the socket. */
+    if(c->sock >= 0) {
         gnutls_bye(c->session, GNUTLS_SHUT_RDWR);
         close(c->sock);
         gnutls_deinit(c->session);
         c->sock = -1;
-    }
-
-    /* Clean up the ship's structure. */
-    if(c->sock >= 0) {
-        close(c->sock);
     }
 
     if(c->recvbuf) {
@@ -365,290 +316,6 @@ void destroy_connection(ship_t *c) {
 }
 
 /* Handle a ship's login response. */
-static int handle_shipgate_login(ship_t *c, shipgate_login_reply_pkt *pkt) {
-    char query[256];
-    ship_t *j;
-    uint8_t key[128], hash[64];
-    int k = ntohs(pkt->ship_key), i;
-    void *result;
-    char **row;
-    uint32_t pver = c->proto_ver = ntohl(pkt->proto_ver);
-    uint16_t menu_code = ntohs(pkt->menu_code);
-    int ship_number;
-
-    /* Check the protocol version for support (packet dropped in v7) */
-    if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > 6) {
-        debug(DBG_WARN, "Invalid protocol version (old login): %lu\n", pver);
-
-        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_BAD_PROTO, NULL, 0);
-        return -1;
-    }
-
-    /* Attempt to grab the key for this ship. */
-    sprintf(query, "SELECT rc4key, main_menu, ship_number FROM ship_data WHERE "
-            "idx='%u'", k);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't query the database\n");
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_BAD_ERROR, NULL, 0);
-        return -1;
-    }
-
-    if((result = sylverant_db_result_store(&conn)) == NULL ||
-       (row = sylverant_db_result_fetch(result)) == NULL) {
-        debug(DBG_WARN, "Invalid index %d\n", k);
-        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_BAD_KEY, NULL, 0);
-        return -1;
-    }
-
-    /* Check the menu code for validity */
-    if(menu_code && (!isalpha(menu_code & 0xFF) | !isalpha(menu_code >> 8))) {
-        debug(DBG_WARN, "Bad menu code for id: %d\n", k);
-        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_BAD_MENU, NULL, 0);
-        return -1;
-    }
-
-    /* If the ship requests the main menu and they aren't allowed there, bail */
-    if(!menu_code && !atoi(row[1])) {
-        debug(DBG_WARN, "Invalid menu code for id: %d\n", k);
-        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_INVAL_MENU, NULL, 0);
-        return -1;
-    }
-
-    /* Grab the key from the result */
-    memcpy(key, row[0], 128);
-    ship_number = atoi(row[2]);
-    sylverant_db_result_free(result);
-
-    /* Apply the nonces */
-    for(i = 0; i < 128; i += 4) {
-        key[i + 0] ^= c->gate_nonce[0];
-        key[i + 1] ^= c->gate_nonce[1];
-        key[i + 2] ^= c->gate_nonce[2];
-        key[i + 3] ^= c->gate_nonce[3];
-    }
-
-    /* Hash the key with SHA-512, and use that as our final key. */
-    SHA512(key, 128, hash);
-    RC4_set_key(&c->gate_key, 64, hash);
-
-    /* Calculate the final ship key. */
-    for(i = 0; i < 128; i += 4) {
-        key[i + 0] ^= c->ship_nonce[0];
-        key[i + 1] ^= c->ship_nonce[1];
-        key[i + 2] ^= c->ship_nonce[2];
-        key[i + 3] ^= c->ship_nonce[3];
-    }
-
-    /* Hash the key with SHA-512, and use that as our final key. */
-    SHA512(key, 128, hash);
-    RC4_set_key(&c->ship_key, 64, hash);
-
-    c->remote_addr = pkt->ship_addr;
-    c->port = ntohs(pkt->ship_port);
-    c->key_idx = k;
-    c->clients = ntohs(pkt->clients);
-    c->games = ntohs(pkt->games);
-    c->flags = ntohl(pkt->flags);
-    c->menu_code = menu_code;
-    strcpy(c->name, pkt->name);
-    c->ship_number = ship_number;
-
-    /* Protocol v9 added BB support, so no ships in here can support it. */
-    c->flags |= LOGIN_FLAG_NOBB;
-
-    sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
-            "ship_id, gm_only, games, menu_code, flags, ship_number, "
-            "protocol_ver) VALUES ('%s', '%hu', '%u', '%hu', '%u', '%u', "
-            "'%d', '%hu', '%hu', '%u', '%d', '%u')", c->name, c->clients,
-            ntohl(c->remote_addr), c->port, 0, c->key_idx,
-            !!(c->flags & LOGIN_FLAG_GMONLY), c->games, c->menu_code, c->flags,
-            ship_number, pver);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
-              c->name);
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        c->key_set = 0;
-        send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_BAD_ERROR, NULL, 0);
-        return -1;
-    }
-
-    /* Hooray for misusing functions! */
-    if(send_error(c, SHDR_TYPE_LOGIN, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
-        return -1;
-    }
-    else {
-        c->key_set = 1;
-    }
-
-    /* Send a status packet to each of the ships. */
-    TAILQ_FOREACH(j, &ships, qentry) {
-        send_ship_status(j, c, 1);
-
-        /* Send this ship to the new ship, as long as that wasn't done just
-           above here. */
-        if(j != c) {
-            send_ship_status(c, j, 1);
-        }
-    }
-
-    return 0;
-}
-
-/* Handle a ship's login response (with IPv6 support!). */
-static int handle_shipgate_login6(ship_t *c, shipgate_login6_reply_pkt *pkt) {
-    char query[256];
-    ship_t *j;
-    uint8_t key[128], hash[64];
-    int k = ntohs(pkt->ship_key), i;
-    void *result;
-    char **row;
-    uint32_t pver = c->proto_ver = ntohl(pkt->proto_ver);
-    uint16_t menu_code = ntohs(pkt->menu_code);
-    int ship_number;
-    uint64_t ip6_hi, ip6_lo;
-
-    /* Check the protocol version for support (first supported in v7) */
-    if(pver < 7 || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
-        debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
-
-        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_BAD_PROTO, NULL, 0);
-        return -1;
-    }
-
-    /* Attempt to grab the key for this ship. */
-    sprintf(query, "SELECT rc4key, main_menu, ship_number FROM ship_data WHERE "
-            "idx='%u'", k);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't query the database\n");
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_BAD_ERROR, NULL, 0);
-        return -1;
-    }
-
-    if((result = sylverant_db_result_store(&conn)) == NULL ||
-       (row = sylverant_db_result_fetch(result)) == NULL) {
-        debug(DBG_WARN, "Invalid index %d\n", k);
-        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_BAD_KEY, NULL, 0);
-        return -1;
-    }
-
-    /* Check the menu code for validity */
-    if(menu_code && (!isalpha(menu_code & 0xFF) | !isalpha(menu_code >> 8))) {
-        debug(DBG_WARN, "Bad menu code for id: %d\n", k);
-        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_BAD_MENU, NULL, 0);
-        return -1;
-    }
-
-    /* If the ship requests the main menu and they aren't allowed there, bail */
-    if(!menu_code && !atoi(row[1])) {
-        debug(DBG_WARN, "Invalid menu code for id: %d\n", k);
-        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_LOGIN_INVAL_MENU, NULL, 0);
-        return -1;
-    }
-
-    /* Grab the key from the result */
-    memcpy(key, row[0], 128);
-    ship_number = atoi(row[2]);
-    sylverant_db_result_free(result);
-
-    /* Apply the nonces */
-    for(i = 0; i < 128; i += 4) {
-        key[i + 0] ^= c->gate_nonce[0];
-        key[i + 1] ^= c->gate_nonce[1];
-        key[i + 2] ^= c->gate_nonce[2];
-        key[i + 3] ^= c->gate_nonce[3];
-    }
-
-    /* Hash the key with SHA-512, and use that as our final key. */
-    SHA512(key, 128, hash);
-    RC4_set_key(&c->gate_key, 64, hash);
-
-    /* Calculate the final ship key. */
-    for(i = 0; i < 128; i += 4) {
-        key[i + 0] ^= c->ship_nonce[0];
-        key[i + 1] ^= c->ship_nonce[1];
-        key[i + 2] ^= c->ship_nonce[2];
-        key[i + 3] ^= c->ship_nonce[3];
-    }
-
-    /* Hash the key with SHA-512, and use that as our final key. */
-    SHA512(key, 128, hash);
-    RC4_set_key(&c->ship_key, 64, hash);
-
-    c->remote_addr = pkt->ship_addr4;
-    memcpy(&c->remote_addr6, pkt->ship_addr6, 16);
-    c->port = ntohs(pkt->ship_port);
-    c->key_idx = k;
-    c->clients = ntohs(pkt->clients);
-    c->games = ntohs(pkt->games);
-    c->flags = ntohl(pkt->flags);
-    c->menu_code = menu_code;
-    memcpy(c->name, pkt->name, 12);
-    c->ship_number = ship_number;
-
-    pack_ipv6(&c->remote_addr6, &ip6_hi, &ip6_lo);
-
-    /* If the ship is older than v9, BB won't work. */
-    if(pver < 9) {
-        c->flags |= LOGIN_FLAG_NOBB;
-    }
-
-    sprintf(query, "INSERT INTO online_ships(name, players, ip, port, int_ip, "
-            "ship_id, gm_only, games, menu_code, flags, ship_number, "
-            "ship_ip6_high, ship_ip6_low, protocol_ver) VALUES ('%s', '%hu', "
-            "'%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u', '%d', '%llu', "
-            "'%llu', '%u')", c->name, c->clients, ntohl(c->remote_addr),
-            c->port, 0, c->key_idx, !!(c->flags & LOGIN_FLAG_GMONLY), c->games,
-            c->menu_code, c->flags, ship_number, (unsigned long long)ip6_hi,
-            (unsigned long long)ip6_lo, pver);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't add %s to the online_ships table.\n",
-              c->name);
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        c->key_set = 0;
-        send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_BAD_ERROR, NULL, 0);
-        return -1;
-    }
-
-    /* Hooray for misusing functions! */
-    if(send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
-        return -1;
-    }
-    else {
-        c->key_set = 1;
-    }
-
-    /* Send a status packet to each of the ships. */
-    TAILQ_FOREACH(j, &ships, qentry) {
-        send_ship_status(j, c, 1);
-
-        /* Send this ship to the new ship, as long as that wasn't done just
-           above here. */
-        if(j != c) {
-            send_ship_status(c, j, 1);
-        }
-    }
-
-    return 0;
-}
-
 static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     char query[256];
     ship_t *j;
@@ -660,7 +327,7 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     uint64_t ip6_hi, ip6_lo;
 
     /* Check the protocol version for support (TLS first supported in v10) */
-    if(pver < 10 || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
+    if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
         debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
 
         send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE | SHDR_FAILURE,
@@ -805,17 +472,8 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* Either the user is not online or we're dealing with a ship that does
-           not support protocol v2, send the packet to any protocol v1 ships,
-           just to be sure... */
+        /* The user's not online, give up. */
         sylverant_db_result_free(result);
-
-        TAILQ_FOREACH(s, &ships, qentry) {
-            if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
-                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
-            }
-        }
-
         return 0;
     }
 
@@ -865,17 +523,8 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* Either the user is not online or we're dealing with a ship that does
-           not support protocol v2, send the packet to any protocol v1 ships,
-           just to be sure... */
+        /* The user's not online, give up. */
         sylverant_db_result_free(result);
-
-        TAILQ_FOREACH(s, &ships, qentry) {
-            if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
-                forward_pc(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
-            }
-        }
-
         return 0;
     }
 
@@ -925,11 +574,8 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* Either the user is not online or we're dealing with a ship that does
-           not support protocol v2. Blue burst stuff isn't supported until v9,
-           so there's not anything we can do here... */
+        /* The user's not online, give up. */
         sylverant_db_result_free(result);
-
         return 0;
     }
 
@@ -951,10 +597,7 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     }
 
     /* Send it on, and finish up... */
-    if(s->proto_ver >= 9) {
-        forward_bb(s, (bb_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
-    }
-
+    forward_bb(s, (bb_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
     return 0;
 }
 
@@ -990,15 +633,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* Either the user is not online or we're dealing with a ship that does
-           not support protocol v2, send the packet to any protocol v1 ships,
-           just to be sure... */
-        TAILQ_FOREACH(s, &ships, qentry) {
-            if(s != c && !(s->flags & LOGIN_FLAG_PROXY) && s->proto_ver < 2) {
-                forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
-            }
-        }
-
+        /* The user's not online, give up. */
         goto out;
     }
 
@@ -1023,15 +658,9 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         goto out;
     }
 
-    /* If either of these are NULL, either the ship doesn't have protocol v3
-       support, or the user is not in a lobby, check which it is. If the former,
-       forward the packet to it, so it can answer. If the latter, then the
-       client doesn't really exist just yet. */
+    /* If either of these are NULL, the user is not in a lobby. Thus, the client
+       doesn't really exist just yet. */
     if(row[4] == NULL || row[3] == NULL) {
-        if(s->proto_ver < 3) {
-            forward_dreamcast(s, (dc_pkt_hdr_t *)pkt, c->key_idx, 0, 0);
-        }
-
         goto out;
     }
 
@@ -1060,13 +689,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply6.gc_search = pkt->gc_search;
         reply6.gc_target = pkt->gc_target;
         parse_ipv6(ip6_hi, ip6_lo, reply6.ip);
-
-        if(c->proto_ver < 9) {
-            reply6.port = LE16((port + block * 4));
-        }
-        else {
-            reply6.port = LE16((port + block * 5));
-        }
+        reply6.port = LE16((port + block * 5));
 
         reply6.menu_id = LE32(0xFFFFFFFF);
         reply6.item_id = LE32(lobby_id);
@@ -1093,13 +716,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply.gc_search = pkt->gc_search;
         reply.gc_target = pkt->gc_target;
         reply.ip = htonl(ip);
-
-        if(c->proto_ver < 9) {
-            reply.port = LE16((port + block * 4));
-        }
-        else {
-            reply.port = LE16((port + block * 5));
-        }
+        reply.port = LE16((port + block * 5));
 
         reply.menu_id = LE32(0xFFFFFFFF);
         reply.item_id = LE32(lobby_id);
@@ -1159,9 +776,7 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* Either the user is not online or we're dealing with a ship that does
-           not support protocol v2. Since BB wasn't supported until protocol v9,
-           bail out now... */
+        /* The user's not online, give up. */
         goto out;
     }
 
@@ -1186,13 +801,8 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
         goto out;
     }
 
-    /* Make sure that the ship supports protocol v9, since BB wasn't supported
-       until then. */
-    if(s->proto_ver < 9) {
-        goto out;
-    }
-
-    /* If either of these are NULL then the user is not in a lobby. */
+    /* If either of these are NULL, the user is not in a lobby. Thus, the client
+       doesn't really exist just yet. */
     if(row[4] == NULL || row[3] == NULL) {
         goto out;
     }
@@ -1488,68 +1098,9 @@ static int handle_bb_set_comment(ship_t *c, shipgate_fw_9_pkt *pkt) {
 }
 
 /* Handle a ship's forwarded Dreamcast packet. */
-static int handle_dreamcast_old(ship_t *c, shipgate_fw_pkt *pkt) {
-    dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
-    uint8_t type = hdr->pkt_type;
-    ship_t *i;
-    uint32_t tmp;
-
-    switch(type) {
-        case GUILD_SEARCH_TYPE:
-            tmp = ntohl(pkt->fw_flags);
-            return handle_guild_search(c, (dc_guild_search_pkt *)hdr, tmp);
-
-        case SIMPLE_MAIL_TYPE:
-            return handle_dc_mail(c, (dc_simple_mail_pkt *)hdr);
-
-        case GUILD_REPLY_TYPE:
-            /* We shouldn't get these anymore if a ship supports protocol v3 or
-               higher, since we shouldn't have sent them... */
-            if(c->proto_ver > 2) {
-                return -1;
-            }
-
-            /* Send this one to the original sender. */
-            tmp = ntohl(pkt->ship_id);
-
-            TAILQ_FOREACH(i, &ships, qentry) {
-                if(i->key_idx == tmp) {
-                    return forward_dreamcast(i, hdr, c->key_idx, 0, 0);
-                }
-            }
-
-            return 0;
-
-        default:
-            /* Warn the ship that sent the packet, then drop it */
-            send_error(c, SHDR_TYPE_DC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
-                       (uint8_t *)pkt, ntohs(pkt->hdr.pkt_len));
-            return 0;
-    }
-}
-
-/* Handle a ship's forwarded PC packet. */
-static int handle_pc_old(ship_t *c, shipgate_fw_pkt *pkt) {
-    dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
-    uint8_t type = hdr->pkt_type;
-
-    switch(type) {
-        case SIMPLE_MAIL_TYPE:
-            return handle_pc_mail(c, (pc_simple_mail_pkt *)hdr);
-
-        default:
-            /* Warn the ship that sent the packet, then drop it */
-            send_error(c, SHDR_TYPE_PC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
-                       (uint8_t *)pkt, ntohs(pkt->hdr.pkt_len));
-            return 0;
-    }
-}
-
-/* Handle a ship's forwarded Dreamcast packet. */
 static int handle_dreamcast(ship_t *c, shipgate_fw_9_pkt *pkt) {
     dc_pkt_hdr_t *hdr = (dc_pkt_hdr_t *)pkt->pkt;
     uint8_t type = hdr->pkt_type;
-    ship_t *i;
     uint32_t tmp;
 
     switch(type) {
@@ -1561,23 +1112,7 @@ static int handle_dreamcast(ship_t *c, shipgate_fw_9_pkt *pkt) {
             return handle_dc_mail(c, (dc_simple_mail_pkt *)hdr);
 
         case GUILD_REPLY_TYPE:
-            /* We shouldn't get these anymore if a ship supports protocol v3 or
-               higher, since we shouldn't have sent them... */
-            if(c->proto_ver > 2) {
-                return -1;
-            }
-
-            /* Send this one to the original sender. */
-            tmp = ntohl(pkt->ship_id);
-
-            TAILQ_FOREACH(i, &ships, qentry) {
-                if(i->key_idx == tmp) {
-                    return forward_dreamcast(i, hdr, c->key_idx, 0, 0);
-                }
-            }
-
-            return 0;
-
+            /* We shouldn't get these anymore (as of protocol v3)... */
         default:
             /* Warn the ship that sent the packet, then drop it */
             send_error(c, SHDR_TYPE_DC, SHDR_FAILURE, ERR_GAME_UNK_PACKET,
@@ -1607,11 +1142,6 @@ static int handle_bb(ship_t *c, shipgate_fw_9_pkt *pkt) {
     bb_pkt_hdr_t *hdr = (bb_pkt_hdr_t *)pkt->pkt;
     uint16_t type = LE16(hdr->pkt_type);
     uint16_t len = LE16(hdr->pkt_len);
-
-    /* These were formally introduced in protocol v9. */
-    if(c->proto_ver < 9) {
-        return -1;
-    }
 
     switch(type) {
         case BB_ADD_GUILDCARD_TYPE:
@@ -2047,11 +1577,6 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     ICONV_CONST char *inptr;
     char *outptr;
 
-    /* Packet introduced in protocol version 2. Error to send in v1. */
-    if(c->proto_ver < 2) {
-        return -1;
-    }
-
     /* Is the name a Blue Burst-style (UTF-16) name or not? */
     if(pkt->ch_name[0] == '\t') {
         memset(name, 0, 64);
@@ -2126,45 +1651,41 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
 
     sylverant_db_result_free(result);
 
-    /* User options first appeared in protocol version 6, so only do this if the
-       ship is at least of that version. */
-    if(c->proto_ver >= 6) {
-        /* See what options we have to deliver to the user */
-        sprintf(query, "SELECT opt, value FROM user_options WHERE "
-                "guildcard='%u'", gc);
+    /* See what options we have to deliver to the user */
+    sprintf(query, "SELECT opt, value FROM user_options WHERE "
+            "guildcard='%u'", gc);
 
-        /* Query for any results */
-        if(sylverant_db_query(&conn, query)) {
-            /* Silently fail here (to the ship anyway), since this doesn't spell
-               doom at all for the logged in user (although, it might spell some
-               inconvenience, potentially) */
-            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-            return 0;
-        }
-
-        /* Grab any results we got */
-        if(!(result = sylverant_db_result_store(&conn))) {
-            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-            return 0;
-        }
-
-        /* Begin the options packet */
-        optpkt = user_options_begin(gc, bl);
-
-        /* Loop through each option to add it to the packet */
-        while((row = sylverant_db_result_fetch(result))) {
-            lengths = sylverant_db_result_lengths(result);
-            opt = (uint32_t)strtoul(row[0], NULL, 0);
-
-            optpkt = user_options_append(optpkt, opt, (uint32_t)lengths[1],
-                                         (uint8_t *)row[1]);
-        }
-
-        sylverant_db_result_free(result);
-
-        /* We're done, send it */
-        send_user_options(c);
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        /* Silently fail here (to the ship anyway), since this doesn't spell
+           doom at all for the logged in user (although, it might spell some
+           inconvenience, potentially) */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
     }
+
+    /* Grab any results we got */
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Begin the options packet */
+    optpkt = user_options_begin(gc, bl);
+
+    /* Loop through each option to add it to the packet */
+    while((row = sylverant_db_result_fetch(result))) {
+        lengths = sylverant_db_result_lengths(result);
+        opt = (uint32_t)strtoul(row[0], NULL, 0);
+
+        optpkt = user_options_append(optpkt, opt, (uint32_t)lengths[1],
+                                     (uint8_t *)row[1]);
+    }
+
+    sylverant_db_result_free(result);
+
+    /* We're done, send it */
+    send_user_options(c);
 
     /* We're done (no need to tell the ship on success) */
     return 0;
@@ -2181,11 +1702,6 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     size_t in, out;
     ICONV_CONST char *inptr;
     char *outptr;
-
-    /* Packet introduced in protocol version 2. Error to send in v1. */
-    if(c->proto_ver < 2) {
-        return -1;
-    }
 
     /* Is the name a Blue Burst-style (UTF-16) name or not? */
     if(pkt->ch_name[0] == '\t') {
@@ -2265,11 +1781,6 @@ static int handle_friendlist_add(ship_t *c, shipgate_friend_add_pkt *pkt) {
     char query[256];
     char nickname[64];
 
-    /* Packet updated in protocol version 4. */
-    if(c->proto_ver < 4) {
-        return -1;
-    }
-
     /* Make sure the length is sane */
     if(pkt->hdr.pkt_len != htons(sizeof(shipgate_friend_add_pkt))) {
         return -1;
@@ -2300,21 +1811,9 @@ static int handle_friendlist_add(ship_t *c, shipgate_friend_add_pkt *pkt) {
                       (uint8_t *)&pkt->user_guildcard, 8);
 }
 
-static int handle_friendlist(ship_t *c, shipgate_friend_upd_pkt *pkt,
-                             uint16_t type) {
+static int handle_friendlist_del(ship_t *c, shipgate_friend_upd_pkt *pkt) {
     uint32_t ugc, fgc;
     char query[256];
-
-    /* Packet introduced in protocol version 2. Error to send in v1. */
-    if(c->proto_ver < 2) {
-        return -1;
-    }
-
-    /* If we're on protocol version 4, then this should be the new type of
-       friend add packet. */
-    if(c->proto_ver >= 4 && type == SHDR_TYPE_ADDFRIEND) {
-        return handle_friendlist_add(c, (shipgate_friend_add_pkt *)pkt);
-    }
 
     /* Make sure the length is sane */
     if(pkt->hdr.pkt_len != htons(sizeof(shipgate_friend_upd_pkt))) {
@@ -2326,30 +1825,18 @@ static int handle_friendlist(ship_t *c, shipgate_friend_upd_pkt *pkt,
     fgc = ntohl(pkt->friend_guildcard);
 
     /* Build the db query */
-    switch(type) {
-        case SHDR_TYPE_ADDFRIEND:
-            sprintf(query, "INSERT INTO friendlist(owner, friend) "
-                    "VALUES('%u', '%u')", ugc, fgc);
-            break;
-
-        case SHDR_TYPE_DELFRIEND:
-            sprintf(query, "DELETE FROM friendlist WHERE owner='%u' AND "
-                    "friend='%u'", ugc, fgc);
-            break;
-
-        default:
-            return -1;
-    }
+    sprintf(query, "DELETE FROM friendlist WHERE owner='%u' AND friend='%u'",
+            ugc, fgc);
 
     /* Execute the query */
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_DELFRIEND, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->user_guildcard, 8);
     }
 
     /* Return success to the ship */
-    return send_error(c, type, SHDR_RESPONSE, ERR_NO_ERROR,
+    return send_error(c, SHDR_TYPE_DELFRIEND, SHDR_RESPONSE, ERR_NO_ERROR,
                       (uint8_t *)&pkt->user_guildcard, 8);
 }
 
@@ -2357,11 +1844,6 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     char query[512];
     char tmp[128];
     uint32_t gc, lid;
-
-    /* Packet introduced in protocol version 3. Error to send in v2/v1. */
-    if(c->proto_ver < 3) {
-        return -1;
-    }
 
     /* Make sure the name is terminated properly */
     pkt->lobby_name[31] = 0;
@@ -2394,11 +1876,6 @@ static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
     size_t in, out;
     ICONV_CONST char *inptr;
     char *outptr;
-
-    /* Packet introduced in protocol version 3. Error to send in v2/v1. */
-    if(c->proto_ver < 3) {
-        return -1;
-    }
 
     /* Verify the length is right */
     count = ntohl(pkt->count);
@@ -2734,11 +2211,6 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
     uint32_t ugc, optlen, opttype;
     int realoptlen;
 
-    /* Packet introduced in protocol version 6. */
-    if(c->proto_ver < 6) {
-        return -1;
-    }
-
     /* Make sure the length is sane */
     if(len < sizeof(shipgate_user_opt_pkt) + 16) {
         return -2;
@@ -2800,11 +2272,6 @@ static int handle_bbopt_req(ship_t *c, shipgate_bb_opts_req_pkt *pkt) {
     char **row;
     sylverant_bb_db_opts_t opts;
 
-    /* Packet introduced in protocol version 9. */
-    if(c->proto_ver < 9) {
-        return -1;
-    }
-
     /* Parse out the guildcard */
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
@@ -2845,11 +2312,6 @@ static int handle_bbopts(ship_t *c, shipgate_bb_opts_pkt *pkt) {
     static char query[sizeof(sylverant_bb_db_opts_t) * 2 + 256];
     uint32_t gc;
 
-    /* Packet introduced in protocol version 9. */
-    if(c->proto_ver < 9) {
-        return -1;
-    }
-
     /* Parse out the guildcard */
     gc = ntohl(pkt->guildcard);
 
@@ -2875,14 +2337,6 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t flags = ntohs(pkt->flags);
 
     switch(type) {
-        case SHDR_TYPE_LOGIN:
-            if(!(flags & SHDR_RESPONSE)) {
-                debug(DBG_WARN, "Client sent invalid login response\n");
-                return -1;
-            }
-
-            return handle_shipgate_login(c, (shipgate_login_reply_pkt *)pkt);
-
         case SHDR_TYPE_LOGIN6:
         {
             shipgate_login6_reply_pkt *p = (shipgate_login6_reply_pkt *)pkt;
@@ -2892,32 +2346,17 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
                 return -1;
             }
 
-            if(c->is_tls) {
-                return handle_shipgate_login6t(c, p);
-            }
-            else {
-                return handle_shipgate_login6(c, p);
-            }
+            return handle_shipgate_login6t(c, p);
         }
 
         case SHDR_TYPE_COUNT:
             return handle_count(c, (shipgate_cnt_pkt *)pkt);
 
         case SHDR_TYPE_DC:
-            if(c->proto_ver < 9) {
-                return handle_dreamcast_old(c, (shipgate_fw_pkt *)pkt);
-            }
-            else {
-                return handle_dreamcast(c, (shipgate_fw_9_pkt *)pkt);
-            }
+            return handle_dreamcast(c, (shipgate_fw_9_pkt *)pkt);
 
         case SHDR_TYPE_PC:
-            if(c->proto_ver < 9) {
-                return handle_pc_old(c, (shipgate_fw_pkt *)pkt);
-            }
-            else {
-                return handle_pc(c, (shipgate_fw_9_pkt *)pkt);
-            }
+            return handle_pc(c, (shipgate_fw_9_pkt *)pkt);
 
         case SHDR_TYPE_BB:
             return handle_bb(c, (shipgate_fw_9_pkt *)pkt);
@@ -2951,8 +2390,10 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_blocklogout(c, (shipgate_block_login_pkt *)pkt);
 
         case SHDR_TYPE_ADDFRIEND:
+            return handle_friendlist_add(c, (shipgate_friend_add_pkt *)pkt);
+
         case SHDR_TYPE_DELFRIEND:
-            return handle_friendlist(c, (shipgate_friend_upd_pkt *)pkt, type);
+            return handle_friendlist_del(c, (shipgate_friend_upd_pkt *)pkt);
 
         case SHDR_TYPE_LOBBYCHG:
             return handle_lobby_chg(c, (shipgate_lobby_change_pkt *)pkt);
@@ -2984,12 +2425,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 }
 
 static ssize_t ship_recv(ship_t *c, void *buffer, size_t len) {
-    if(c->is_tls) {
-        return gnutls_record_recv(c->session, buffer, len);
-    }
-    else {
-        return recv(c->sock, buffer, len, 0);
-    }
+    return gnutls_record_recv(c->session, buffer, len);
 }
 
 /* Handle incoming data to the shipgate. */
@@ -3027,13 +2463,7 @@ int handle_pkt(ship_t *c) {
             /* Grab the packet header so we know what exactly we're looking
                for, in terms of packet length. */
             if(!c->hdr_read) {
-                if(!c->is_tls && c->key_set) {
-                    RC4(&c->ship_key, 8, rbp, (unsigned char *)&c->pkt);
-                }
-                else {
-                    memcpy(&c->pkt, rbp, 8);
-                }
-
+                memcpy(&c->pkt, rbp, 8);
                 c->hdr_read = 1;
             }
 
@@ -3046,11 +2476,7 @@ int handle_pkt(ship_t *c) {
 
             /* Do we have the whole packet? */
             if(sz >= (ssize_t)pkt_sz) {
-                /* Yes, we do, decrypt it. */
-                if(!c->is_tls && c->key_set) {
-                    RC4(&c->ship_key, pkt_sz - 8, rbp + 8, rbp + 8);
-                }
-
+                /* Yep, copy it and process it */
                 memcpy(rbp, &c->pkt, 8);
 
                 /* Pass it onto the correct handler. */

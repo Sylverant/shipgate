@@ -26,7 +26,7 @@
 #include "packets.h"
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
-#define SHIPGATE_MINIMUM_PROTO_VER 1
+#define SHIPGATE_MINIMUM_PROTO_VER 10
 #define SHIPGATE_MAXIMUM_PROTO_VER 10
 
 #ifdef PACKED
@@ -101,10 +101,7 @@ typedef struct shipgate_login_reply {
    Note that IPv4 support is still required, as PSO itself does not actually
    support IPv6 (however, proxies can alleviate this problem a bit). */
 typedef struct shipgate_login6_reply {
-    union {
-        shipgate_hdr_t o;
-        shipgate_hdr_new_t n;
-    } hdr;
+    shipgate_hdr_t hdr;
     uint32_t proto_ver;
     uint32_t flags;
     uint8_t name[12];
@@ -367,7 +364,6 @@ static const char shipgate_login_msg[] =
     "Sylverant Shipgate Copyright Lawrence Sebald";
 
 /* Flags for the flags field of shipgate_hdr_t */
-#define SHDR_NO_DEFLATE     0x0001      /* Packet was not deflate()'d */
 #define SHDR_RESPONSE       0x8000      /* Response to a request */
 #define SHDR_FAILURE        0x4000      /* Failure to complete request */
 
