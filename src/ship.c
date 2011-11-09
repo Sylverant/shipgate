@@ -1316,20 +1316,38 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     char query[256];
     void *result;
     char **row;
-    int account_id;
     int i;
     unsigned char hash[16];
+    char esc[65];
+    uint16_t len;
     uint8_t priv;
 
+    /* Check the sanity of the packet. Disconnect the ship if there's some odd
+       issue with the packet's sanity. */
+    len = ntohs(pkt->hdr.pkt_len);
+    if(len != sizeof(shipgate_gmlogin_req_pkt)) {
+        debug(DBG_WARN, "Ship %s sent invalid GM Login!?\n", c->name);
+        return -1;
+    }
+
+    if(pkt->username[31] != '\0' || pkt->password[31] != '\0') {
+        debug(DBG_WARN, "Ship %s sent unterminated GM Login\n", c->name);
+        return -1;
+    }
+
+    /* Escape the username and grab the data we need. */
+    sylverant_db_escape_str(&conn, esc, pkt->username, strlen(pkt->username));
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
 
     /* Build the query asking for the data. */
-    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%u'",
-            gc);
+    sprintf(query, "SELECT password, regtime, privlevel FROM guildcards "
+            "NATURAL JOIN account_data WHERE guildcard='%u' AND username='%s'",
+            gc, esc);
 
     if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
+        debug(DBG_WARN, "Couldn't lookup account data (user: %s, gc: %u)\n",
+              pkt->username, gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
         return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
@@ -1338,7 +1356,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
-        debug(DBG_WARN, "Couldn't fetch account id (%u)\n", gc);
+        debug(DBG_WARN, "Couldn't fetch account data (user: %s, gc: %u)\n",
+              pkt->username, gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
         return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
@@ -1347,41 +1366,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
-        debug(DBG_WARN, "No account data (%u)\n", gc);
-
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_NO_ACC, (uint8_t *)&pkt->guildcard, 8);
-    }
-
-    /* Grab the data from the result */
-    account_id = atoi(row[0]);
-    sylverant_db_result_free(result);
-
-    /* Now, attempt to fetch the gm status of the account. */
-    sprintf(query, "SELECT password, regtime, privlevel FROM account_data WHERE"
-            " account_id='%d' AND username='%s'", account_id, pkt->username);
-
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't lookup account data (%d)\n", account_id);
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
-                          (uint8_t *)&pkt->guildcard, 8);
-    }
-
-    /* Grab the data we got. */
-    if((result = sylverant_db_result_store(&conn)) == NULL) {
-        debug(DBG_WARN, "Couldn't fetch account data (%d)\n", account_id);
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
-                          (uint8_t *)&pkt->guildcard, 8);
-    }
-
-    if((row = sylverant_db_result_fetch(result)) == NULL) {
-        sylverant_db_result_free(result);
-        debug(DBG_LOG, "Failed login - no data? (%s: %d)\n", pkt->username,
-              account_id);
+        debug(DBG_LOG, "Failed login - no data? (user: %s, gc: %u)\n",
+              pkt->username, gc);
 
         return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
                           ERR_GMLOGIN_NOT_GM, (uint8_t *)&pkt->guildcard, 8);
@@ -1401,7 +1387,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     }
 
     if(strcmp(row[0], query)) {
-        debug(DBG_LOG, "Failed login - bad password (%d)\n", account_id);
+        debug(DBG_LOG, "Failed login - bad password (user: %s, gc: %u)\n",
+              pkt->username, gc);
         sylverant_db_result_free(result);
 
         return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
@@ -1417,7 +1404,7 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     if(((priv & CLIENT_PRIV_GLOBAL_GM) && !(priv & CLIENT_PRIV_LOCAL_GM)) ||
        ((priv & CLIENT_PRIV_GLOBAL_ROOT) && !(priv & CLIENT_PRIV_LOCAL_ROOT)) ||
        ((priv & CLIENT_PRIV_LOCAL_ROOT) && !(priv & CLIENT_PRIV_GLOBAL_ROOT))) {
-        debug(DBG_WARN, "Invalid privileges on account %d: %02x\n", account_id,
+        debug(DBG_WARN, "Invalid privileges for user %u: %02x\n", pkt->username,
               priv);
         sylverant_db_result_free(result);
 
