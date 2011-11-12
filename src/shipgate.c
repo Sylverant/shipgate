@@ -228,14 +228,16 @@ void run_server(int tsock, int tsock6) {
 
             /* If we haven't heard from a ship in 2 minutes, its dead.
                Disconnect it. */
-            if(now > i->last_message + 120) {
+            if(now > i->last_message + 120 && i->last_ping &&
+               now > i->last_ping + 60) {
                 destroy_connection(i);
                 i = tmp;
                 continue;
             }
             /* Otherwise, if we haven't heard from it in a minute, ping it. */
-            else if(now > i->last_message + 60) {
+            else if(now > i->last_message + 60 && now > i->last_ping + 10) {
                 send_ping(i, 0);
+                i->last_ping = now;
             }
 
             FD_SET(i->sock, &readfds);
@@ -280,6 +282,8 @@ void run_server(int tsock, int tsock6) {
                         i->disconnected = 1;
                         continue;
                     }
+
+                    i->last_ping = 0;
                 }
 
                 /* If we have anything to write, check if we can. */

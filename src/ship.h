@@ -76,7 +76,9 @@ typedef struct ship {
     int ship_number;
     uint8_t ship_nonce[4];
     uint8_t gate_nonce[4];
+
     time_t last_message;
+    time_t last_ping;
 
     unsigned char *recvbuf;
     int recvbuf_cur;
