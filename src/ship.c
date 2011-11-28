@@ -28,6 +28,8 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/x509.h>
 
+#include <zlib.h>
+
 #include <sylverant/debug.h>
 #include <sylverant/database.h>
 #include <sylverant/mtwist.h>
@@ -128,7 +130,7 @@ ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     }
 
     memset(rv, 0, sizeof(ship_t));
-    
+
     /* Store basic parameters in the client structure. */
     rv->sock = sock;
     rv->last_message = time(NULL);
@@ -1181,6 +1183,9 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
     uint32_t gc, slot;
     uint16_t len = ntohs(pkt->hdr.pkt_len) - sizeof(shipgate_char_data_pkt);
     static char query[16384];
+    Bytef *cmp_buf;
+    uLong cmp_sz;
+    int compressed = ~Z_OK;
 
     gc = ntohl(pkt->guildcard);
     slot = ntohl(pkt->slot);
@@ -1207,12 +1212,31 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
         return 0;
     }
 
+    /* Compress the character data */
+    cmp_sz = compressBound((uLong)len);
+
+    if((cmp_buf = (Bytef *)malloc(cmp_sz))) {
+        compressed = compress2(cmp_buf, &cmp_sz, (Bytef *)pkt->data,
+                               (uLong)len, 9);
+    }
+
     /* Build up the store query for it. */
-    sprintf(query, "INSERT INTO character_data(guildcard, slot, data) VALUES "
-            "('%u', '%u', '", gc, slot);
-    sylverant_db_escape_str(&conn, query + strlen(query), (char *)pkt->data,
-                            len);
+    if(compressed == Z_OK && cmp_sz < len) {
+        sprintf(query, "INSERT INTO character_data(guildcard, slot, size, "
+                "data) VALUES ('%u', '%u', '%u', '", gc, slot,
+                (unsigned)len);
+        sylverant_db_escape_str(&conn, query + strlen(query), (char *)cmp_buf,
+                                cmp_sz);
+    }
+    else {
+        sprintf(query, "INSERT INTO character_data(guildcard, slot, data) "
+                "VALUES ('%u', '%u', '", gc, slot);
+        sylverant_db_escape_str(&conn, query + strlen(query), (char *)pkt->data,
+                                len);
+    }
+
     strcat(query, "')");
+    free(cmp_buf);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't save character data (%u: %u)\n", gc, slot);
@@ -1237,13 +1261,14 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     char **row;
     unsigned long *len;
     int sz, rv;
+    uLong sz2, csz;
 
     gc = ntohl(pkt->guildcard);
     slot = ntohl(pkt->slot);
 
     /* Build the query asking for the data. */
-    sprintf(query, "SELECT data FROM character_data WHERE guildcard='%u' AND "
-            "slot='%u'", gc, slot);
+    sprintf(query, "SELECT data, size FROM character_data WHERE guildcard='%u' "
+            "AND slot='%u'", gc, slot);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't fetch character data (%u: %u)\n", gc, slot);
@@ -1288,18 +1313,51 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     /* Grab the data from the result */
     sz = (int)len[0];
 
-    data = (uint8_t *)malloc(sz);
-    if(!data) {
-        sylverant_db_result_free(result);
-        debug(DBG_WARN, "Couldn't allocate for character data\n");
-        debug(DBG_WARN, "%s\n", strerror(errno));
+    if(row[1]) {
+        sz2 = (uLong)atoi(row[1]);
+        csz = (uLong)sz;
 
-        send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
-                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
-        return 0;
+        data = (uint8_t *)malloc(sz2);
+        if(!data) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Couldn't allocate for uncompressed data\n");
+            debug(DBG_WARN, "%s\n", strerror(errno));
+            sylverant_db_result_free(result);
+            
+            send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                       ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            return 0;
+        }
+
+        /* Decompress it */
+        if(uncompress((Bytef *)data, &sz2, (Bytef *)row[0], csz) != Z_OK) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Couldn't decompress data\n");
+            sylverant_db_result_free(result);
+
+            send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                       ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            return 0;
+        }
+
+        sz = sz2;
+    }
+    else {
+        data = (uint8_t *)malloc(sz);
+        if(!data) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Couldn't allocate for character data\n");
+            debug(DBG_WARN, "%s\n", strerror(errno));
+            sylverant_db_result_free(result);
+
+            send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
+                       ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            return 0;
+        }
+
+        memcpy(data, row[0], len[0]);
     }
 
-    memcpy(data, row[0], len[0]);
     sylverant_db_result_free(result);
 
     /* Send the data back to the ship. */

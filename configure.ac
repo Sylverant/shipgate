@@ -59,6 +59,7 @@ LIBS="$LIBS $gnutls_LIBS"
 
 MYSQL_CLIENT()
 AC_CHECK_LIB([sylverant], [sylverant_read_config], , AC_MSG_ERROR([libsylverant is required!]))
+AC_CHECK_LIB([z], [compress2], , AC_MSG_ERROR([zlib is required!]))
 
 MYSQL_LIBS="`mysql_config --libs`"
 AC_SUBST(MYSQL_LIBS)
