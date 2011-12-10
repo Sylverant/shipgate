@@ -1252,6 +1252,195 @@ static int handle_cdata(ship_t *c, shipgate_char_data_pkt *pkt) {
                       (uint8_t *)&pkt->guildcard, 8);
 }
 
+static int handle_cbkup_req(ship_t *c, shipgate_char_bkup_pkt *pkt, uint32_t gc,
+                            const char name[], uint32_t block) {
+    char query[256];
+    char name2[65];
+    uint8_t *data;
+    void *result;
+    char **row;
+    unsigned long *len;
+    int sz, rv;
+    uLong sz2, csz;
+
+    /* Build the query asking for the data. */
+    sylverant_db_escape_str(&conn, name2, name, strlen(name));
+    sprintf(query, "SELECT data, size FROM character_backup WHERE "
+            "guildcard='%u' AND name='%s'", gc, name2);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch character backup (%u: %s)\n", gc, name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch character backup (%u: %s)\n", gc, name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "No saved character backup (%u: %s)\n", gc, name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_CREQ_NO_DATA, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
+    /* Grab the length of the character data */
+    if(!(len = sylverant_db_result_lengths(result))) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "Couldn't get length of character backup\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
+    /* Grab the data from the result */
+    sz = (int)len[0];
+
+    if(row[1]) {
+        sz2 = (uLong)atoi(row[1]);
+        csz = (uLong)sz;
+
+        data = (uint8_t *)malloc(sz2);
+        if(!data) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Couldn't allocate mem for uncompressed backup\n");
+            debug(DBG_WARN, "%s\n", strerror(errno));
+            sylverant_db_result_free(result);
+
+            send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                       ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            return 0;
+        }
+
+        /* Decompress it */
+        if(uncompress((Bytef *)data, &sz2, (Bytef *)row[0], csz) != Z_OK) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Couldn't decompress backup\n");
+            sylverant_db_result_free(result);
+
+            send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                       ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            return 0;
+        }
+
+        sz = sz2;
+    }
+    else {
+        data = (uint8_t *)malloc(sz);
+        if(!data) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Couldn't allocate memory for character backup\n");
+            debug(DBG_WARN, "%s\n", strerror(errno));
+            sylverant_db_result_free(result);
+
+            send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                       ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            return 0;
+        }
+
+        memcpy(data, row[0], len[0]);
+    }
+
+    sylverant_db_result_free(result);
+
+    /* Send the data back to the ship. */
+    rv = send_cdata(c, gc, (uint32_t)-1, data, sz, block);
+
+    /* Clean up and finish */
+    free(data);
+    return rv;
+}
+
+static int handle_cbkup(ship_t *c, shipgate_char_bkup_pkt *pkt) {
+    static char query[16384];
+    uint32_t gc, block;
+    uint16_t len = ntohs(pkt->hdr.pkt_len) - sizeof(shipgate_char_bkup_pkt);
+    char name[32], name2[65];
+    Bytef *cmp_buf;
+    uLong cmp_sz;
+    int compressed = ~Z_OK;
+
+    gc = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+    strncpy(name, (const char *)pkt->name, 32);
+    name[31] = 0;
+
+    /* Make sure the ship is of a sane version */
+    if(c->proto_ver < 11) {
+        debug(DBG_WARN, "%s sent character backup pkt, but shouldn't have!\n",
+              c->name);
+        return -1;
+    }
+
+    /* Is this a restore request or are we saving the character data? */
+    if(len == 0) {
+        return handle_cbkup_req(c, pkt, gc, name, block);
+    }
+
+    /* Is it a Blue Burst character or not? */
+    if(len > 1056) {
+        len = sizeof(sylverant_bb_db_char_t);
+    }
+    else {
+        len = 1052;
+    }
+
+    sylverant_db_escape_str(&conn, name2, name, strlen(name));
+
+    /* Compress the character data */
+    cmp_sz = compressBound((uLong)len);
+
+    if((cmp_buf = (Bytef *)malloc(cmp_sz))) {
+        compressed = compress2(cmp_buf, &cmp_sz, (Bytef *)pkt->data,
+                               (uLong)len, 9);
+    }
+
+    /* Build up the store query for it. */
+    if(compressed == Z_OK && cmp_sz < len) {
+        sprintf(query, "INSERT INTO character_backup(guildcard, size, name, "
+                "data) VALUES ('%u', '%u', '%s', '", gc, (unsigned)len, name2);
+        sylverant_db_escape_str(&conn, query + strlen(query), (char *)cmp_buf,
+                                cmp_sz);
+    }
+    else {
+        sprintf(query, "INSERT INTO character_backup(guildcard, name, data) "
+                "VALUES ('%u', '%s', '", gc, name2);
+        sylverant_db_escape_str(&conn, query + strlen(query), (char *)pkt->data,
+                                len);
+    }
+
+    strcat(query, "') ON DUPLICATE KEY UPDATE data=VALUES(data)");
+    free(cmp_buf);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't save character backup (%u: %s)\n", gc, name);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE | SHDR_FAILURE,
+                   ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        return 0;
+    }
+
+    /* Return success (yeah, bad use of this function, but whatever). */
+    return send_error(c, SHDR_TYPE_CBKUP, SHDR_RESPONSE, ERR_NO_ERROR,
+                      (uint8_t *)&pkt->guildcard, 8);
+}
+
 /* Handle a ship's character data request packet. */
 static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     uint32_t gc, slot;
@@ -1361,7 +1550,7 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     sylverant_db_result_free(result);
 
     /* Send the data back to the ship. */
-    rv = send_cdata(c, gc, slot, data, sz);
+    rv = send_cdata(c, gc, slot, data, sz, 0);
 
     /* Clean up and finish */
     free(data);
@@ -2464,7 +2653,11 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
         case SHDR_TYPE_BBOPT_REQ:
             return handle_bbopt_req(c, (shipgate_bb_opts_req_pkt *)pkt);
 
+        case SHDR_TYPE_CBKUP:
+            return handle_cbkup(c, (shipgate_char_bkup_pkt *)pkt);
+
         default:
+            debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);
             return -3;
     }
 }
@@ -2513,11 +2706,6 @@ int handle_pkt(ship_t *c) {
             }
 
             pkt_sz = htons(c->pkt.pkt_len);
-
-            /* We'll always need a multiple of 8 bytes. */
-            if(pkt_sz & 0x07) {
-                pkt_sz = (pkt_sz & 0xFFF8) + 8;
-            }
 
             /* Do we have the whole packet? */
             if(sz >= (ssize_t)pkt_sz) {

@@ -27,7 +27,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 10
-#define SHIPGATE_MAXIMUM_PROTO_VER 10
+#define SHIPGATE_MAXIMUM_PROTO_VER 11
 
 #ifdef PACKED
 #undef PACKED
@@ -51,6 +51,13 @@ typedef struct shipgate_cdata_err {
     uint32_t guildcard;
     uint32_t slot;
 } PACKED shipgate_cdata_err_pkt;
+
+/* Error packet in reply to character backup send or character backup request */
+typedef struct shipgate_cbkup_err {
+    shipgate_error_pkt base;
+    uint32_t guildcard;
+    uint32_t block;
+} PACKED shipgate_cbkup_err_pkt;
 
 /* Error packet in reply to gm login */
 typedef struct shipgate_gm_err {
@@ -180,9 +187,19 @@ typedef struct shipgate_char_data {
     shipgate_hdr_t hdr;
     uint32_t guildcard;
     uint32_t slot;
-    uint32_t padding;
+    uint32_t block;
     uint8_t data[];
 } PACKED shipgate_char_data_pkt;
+
+/* A packet sent from clients to save their character backup or to request that
+   the gate send it back to them. */
+typedef struct shipgate_char_bkup {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t block;
+    uint8_t name[32];
+    uint8_t data[];
+} PACKED shipgate_char_bkup_pkt;
 
 /* A packet sent to request saved character data. */
 typedef struct shipgate_char_req {
@@ -397,6 +414,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_LOGIN6    0x0025      /* A ship login (potentially IPv6) */
 #define SHDR_TYPE_BBOPTS    0x0026      /* A user's Blue Burst options */
 #define SHDR_TYPE_BBOPT_REQ 0x0027      /* Request Blue Burst options */
+#define SHDR_TYPE_CBKUP     0x0028      /* A character data backup packet */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -465,7 +483,8 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status);
 int send_ping(ship_t *c, int reply);
 
 /* Send the ship a character data restore. */
-int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz);
+int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz,
+               uint32_t block);
 
 /* Send a reply to a GM login request. */
 int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p);

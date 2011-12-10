@@ -275,7 +275,8 @@ int send_ping(ship_t *c, int reply) {
 }
 
 /* Send the ship a character data restore. */
-int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz) {
+int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz,
+               uint32_t block) {
     shipgate_char_data_pkt *pkt = (shipgate_char_data_pkt *)sendbuf;
 
     /* Fill in the header. */
@@ -288,7 +289,7 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz) {
     /* Fill in the body. */
     pkt->guildcard = htonl(gc);
     pkt->slot = htonl(slot);
-    pkt->padding = 0;
+    pkt->block = block;
     memcpy(pkt->data, cdata, sz); 
 
     /* Send it away. */
