@@ -2463,6 +2463,7 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
     /* Handle each option separately */
     switch(opttype) {
         case USER_OPT_QUEST_LANG:
+        case USER_OPT_ENABLE_BACKUP:
             /* The full option should be 16 bytes */
             if(optlen != 16) {
                 return -4;
