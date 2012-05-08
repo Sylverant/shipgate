@@ -610,18 +610,19 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
     void *result;
     char **row;
     uint16_t ship_id, port;
-    uint32_t lobby_id, ip, block;
+    uint32_t lobby_id, ip, block, dlobby_id;
     uint64_t ip6_hi, ip6_lo;
     ship_t *s;
     dc_guild_reply_pkt reply;
     dc_guild_reply6_pkt reply6;
+    char lobby_name[32], gname[17];
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
             "lobby, lobby_id, online_ships.name, ip, port, gm_only, "
-            "ship_ip6_high, ship_ip6_low FROM online_clients INNER JOIN "
-            "online_ships ON online_clients.ship_id = online_ships.ship_id "
-            "WHERE guildcard='%u'", guildcard);
+            "ship_ip6_high, ship_ip6_low, dlobby_id FROM online_clients INNER "
+            "JOIN online_ships ON online_clients.ship_id = "
+            "online_ships.ship_id WHERE guildcard='%u'", guildcard);
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Guild Search Error: %s\n", sylverant_db_error(&conn));
         return 0;
@@ -660,9 +661,9 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         goto out;
     }
 
-    /* If either of these are NULL, the user is not in a lobby. Thus, the client
+    /* If any of these are NULL, the user is not in a lobby. Thus, the client
        doesn't really exist just yet. */
-    if(row[4] == NULL || row[3] == NULL) {
+    if(row[4] == NULL || row[3] == NULL || row[11] == NULL) {
         goto out;
     }
 
@@ -673,10 +674,18 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
     ip = (uint32_t)strtoul(row[6], NULL, 0);
     ip6_hi = (uint64_t)strtoull(row[9], NULL, 0);
     ip6_lo = (uint64_t)strtoull(row[10], NULL, 0);
+    dlobby_id = (uint32_t)strtoul(row[11], NULL, 0);
 
     if(errno) {
         debug(DBG_WARN, "Error parsing in guild search: %s", strerror(errno));
         goto out;
+    }
+
+    if(dlobby_id <= 15) {
+        sprintf(lobby_name, "BLOCK%02d-%02d", block, dlobby_id);
+    }
+    else {
+        sprintf(lobby_name, "BLOCK%02d-C%d", block, dlobby_id - 15);
     }
 
     /* Set up the reply, we should have enough data now */
@@ -694,15 +703,40 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply6.port = LE16((port + block * 5));
 
         reply6.menu_id = LE32(0xFFFFFFFF);
-        reply6.item_id = LE32(lobby_id);
+        reply6.item_id = LE32(dlobby_id);
         strcpy(reply6.name, row[0]);
 
-        if(row[3][0] == '\t') {
-            sprintf(reply6.location, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+        if(dlobby_id != lobby_id) {
+            /* See if we need to truncate the team name */
+            if(flags & FW_FLAG_IS_PSOPC) {
+                if(row[3][0] == '\t') {
+                    strncpy(gname, row[3], 14);
+                    gname[14] = 0;
+                }
+                else {
+                    strncpy(gname + 2, row[3], 12);
+                    gname[0] = '\t';
+                    gname[1] = 'E';
+                    gname[14] = 0;
+                }
+            }
+            else {
+                if(row[3][0] == '\t') {
+                    strncpy(gname, row[3], 16);
+                    gname[16] = 0;
+                }
+                else {
+                    strncpy(gname + 2, row[3], 14);
+                    gname[0] = '\t';
+                    gname[1] = 'E';
+                    gname[16] = 0;
+                }
+            }
+
+            sprintf(reply6.location, "%s,%s, ,%s", gname, lobby_name, row[5]);
         }
         else {
-            sprintf(reply6.location, "\tE%s,BLOCK%02d,%s", row[3], block,
-                    row[5]);
+            sprintf(reply6.location, "%s, ,%s", lobby_name, row[5]);
         }
 
         /* Send it away */
@@ -721,15 +755,40 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply.port = LE16((port + block * 5));
 
         reply.menu_id = LE32(0xFFFFFFFF);
-        reply.item_id = LE32(lobby_id);
+        reply.item_id = LE32(dlobby_id);
         strcpy(reply.name, row[0]);
 
-        if(row[3][0] == '\t') {
-            sprintf(reply.location, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+        if(dlobby_id != lobby_id) {
+            /* See if we need to truncate the team name */
+            if(flags & FW_FLAG_IS_PSOPC) {
+                if(row[3][0] == '\t') {
+                    strncpy(gname, row[3], 14);
+                    gname[14] = 0;
+                }
+                else {
+                    strncpy(gname + 2, row[3], 12);
+                    gname[0] = '\t';
+                    gname[1] = 'E';
+                    gname[14] = 0;
+                }
+            }
+            else {
+                if(row[3][0] == '\t') {
+                    strncpy(gname, row[3], 16);
+                    gname[16] = 0;
+                }
+                else {
+                    strncpy(gname + 2, row[3], 14);
+                    gname[0] = '\t';
+                    gname[1] = 'E';
+                    gname[16] = 0;
+                }
+            }
+
+            sprintf(reply.location, "%s,%s, ,%s", gname, lobby_name, row[5]);
         }
         else {
-            sprintf(reply.location, "\tE%s,BLOCK%02d,%s", row[3], block,
-                    row[5]);
+            sprintf(reply.location, "%s, ,%s", lobby_name, row[5]);
         }
 
         /* Send it away */
@@ -751,20 +810,21 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     void *result;
     char **row;
     uint16_t ship_id, port;
-    uint32_t lobby_id, ip, block;
+    uint32_t lobby_id, ip, block, dlobby_id;
     uint64_t ip6_hi, ip6_lo;
     ship_t *s;
     bb_guild_reply_pkt reply;
     size_t in, out;
     ICONV_CONST char *inptr;
     char *outptr;
+    char lobby_name[32], gname[17];
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
             "lobby, lobby_id, online_ships.name, ip, port, gm_only, "
-            "ship_ip6_high, ship_ip6_low FROM online_clients INNER JOIN "
-            "online_ships ON online_clients.ship_id = online_ships.ship_id "
-            "WHERE guildcard='%u'", guildcard);
+            "ship_ip6_high, ship_ip6_low, dlobby_id FROM online_clients INNER "
+            "JOIN online_ships ON online_clients.ship_id = "
+            "online_ships.ship_id WHERE guildcard='%u'", guildcard);
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Guild Search Error: %s\n", sylverant_db_error(&conn));
         return 0;
@@ -803,9 +863,9 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
         goto out;
     }
 
-    /* If either of these are NULL, the user is not in a lobby. Thus, the client
+    /* If any of these are NULL, the user is not in a lobby. Thus, the client
        doesn't really exist just yet. */
-    if(row[4] == NULL || row[3] == NULL) {
+    if(row[4] == NULL || row[3] == NULL || row[11] == NULL) {
         goto out;
     }
 
@@ -816,6 +876,7 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     ip = (uint32_t)strtoul(row[6], NULL, 0);
     ip6_hi = (uint64_t)strtoull(row[9], NULL, 0);
     ip6_lo = (uint64_t)strtoull(row[10], NULL, 0);
+    dlobby_id = (uint32_t)strtoul(row[11], NULL, 0);
 
     if(errno) {
         debug(DBG_WARN, "Error parsing in guild search: %s", strerror(errno));
@@ -834,7 +895,7 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     reply.ip = htonl(ip);
     reply.port = LE16((port + block * 5 + 4));
     reply.menu_id = LE32(0xFFFFFFFF);
-    reply.item_id = LE32(lobby_id);
+    reply.item_id = LE32(dlobby_id);
 
     /* Convert the name to the right encoding */
     strcpy(query, row[0]);
@@ -855,11 +916,22 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     iconv(ic_utf8_to_utf16, &inptr, &in, &outptr, &out);
 
     /* Build the location string, and convert it */
-    if(row[3][0] == '\t') {
-        sprintf(query, "%s,BLOCK%02d,%s", row[3], block, row[5]);
+    if(dlobby_id != lobby_id) {
+        if(row[3][0] == '\t') {
+            strncpy(gname, row[3], 16);
+            gname[16] = 0;
+        }
+        else {
+            strncpy(gname + 2, row[3], 14);
+            gname[0] = '\t';
+            gname[1] = 'E';
+            gname[16] = 0;
+        }
+
+        sprintf(query, "%s,%s, ,%s", gname, lobby_name, row[5]);
     }
     else {
-        sprintf(query, "\tE%s,BLOCK%02d,%s", row[3], block, row[5]);
+        sprintf(query, "%s, ,%s", lobby_name, row[5]);
     }
 
     in = strlen(query);
@@ -2089,8 +2161,16 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     /* Update the client's entry */
     sylverant_db_escape_str(&conn, tmp, pkt->lobby_name,
                             strlen(pkt->lobby_name));
-    sprintf(query, "UPDATE online_clients SET lobby_id='%u', lobby='%s' WHERE "
-            "guildcard='%u' AND ship_id='%hu'", lid, tmp, gc, c->key_idx);
+    if(lid > 20) {
+        sprintf(query, "UPDATE online_clients SET lobby_id='%u', lobby='%s' "
+                "WHERE guildcard='%u' AND ship_id='%hu'", lid, tmp, gc,
+                c->key_idx);
+    }
+    else {
+        sprintf(query, "UPDATE online_clients SET lobby_id='%u', lobby='%s', "
+                "dlobby_id='%u' WHERE guildcard='%u' AND ship_id='%hu'", lid,
+                tmp, lid, gc, c->key_idx);
+    }
 
     /* This shouldn't ever "fail" so to speak... */
     if(sylverant_db_query(&conn, query)) {
@@ -2102,7 +2182,7 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     return 0;
 }
 
-static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
+static int handle_block_clients(ship_t *c, shipgate_bclients_pkt *pkt) {
     char query[512];
     char tmp[128], tmp2[128], name[64];
     uint32_t gc, lid, count, bl, i;
@@ -2160,7 +2240,105 @@ static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
 
         /* Grab the integers out */
         gc = ntohl(pkt->entries[i].guildcard);
-        lid = ntohl(pkt->entries[i].lobby);        
+        lid = ntohl(pkt->entries[i].lobby);
+
+        /* Escape the name string */
+        sylverant_db_escape_str(&conn, tmp, name, strlen(name));
+
+        /* If we're not in a lobby, that's all we need */
+        if(lid == 0) {
+            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
+                    "ship_id, block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp,
+                    c->key_idx, bl);
+        }
+        else if(lid <= 20) {
+            sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
+                                    strlen(pkt->entries[i].lobby_name));
+            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
+                    "ship_id, block, lobby_id, lobby, dlobby_id) VALUES('%u', "
+                    "'%s', '%hu', '%u', '%u', '%s', '%u')", gc, tmp, c->key_idx,
+                    bl, lid, tmp2, lid);
+        }
+        else {
+            sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
+                                    strlen(pkt->entries[i].lobby_name));
+            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
+                    "ship_id, block, lobby_id, lobby, dlobby_id) VALUES('%u', "
+                    "'%s', '%hu', '%u', '%u', '%s', '1')", gc, tmp, c->key_idx,
+                    bl, lid, tmp2);
+        }
+
+        /* Run the query */
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+            continue;
+        }
+    }
+
+    /* We're done (no need to tell the ship on success) */
+    return 0;
+}
+
+static int handle_clients12(ship_t *c, shipgate_bclients_12_pkt *pkt) {
+    char query[512];
+    char tmp[128], tmp2[128], name[64];
+    uint32_t gc, lid, dlid, count, bl, i;
+    uint16_t len;
+    size_t in, out;
+    ICONV_CONST char *inptr;
+    char *outptr;
+
+    /* Verify the length is right */
+    count = ntohl(pkt->count);
+    len = ntohs(pkt->hdr.pkt_len);
+
+    if(len != 16 + count * 80 || count < 1) {
+        debug(DBG_WARN, "Invalid block clients packet received\n");
+        return -1;
+    }
+
+    /* Grab the global stuff */
+    bl = ntohl(pkt->block);
+
+    /* Make sure there's nothing for this ship/block in the db */
+    sprintf(query, "DELETE FROM online_clients WHERE ship_id='%hu' AND "
+            "block='%u'", c->key_idx, bl);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return -1;
+    }
+
+    /* Run through each entry */
+    for(i = 0; i < count; ++i) {
+        /* Is the name a Blue Burst-style (UTF-16) name or not? */
+        if(pkt->entries[i].ch_name[0] == '\t') {
+            memset(name, 0, 64);
+            in = 32;
+            out = 64;
+            inptr = pkt->entries[i].ch_name;
+            outptr = name;
+
+            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
+        }
+        else {
+            /* Make sure the name is terminated properly */
+            if(pkt->entries[i].ch_name[31] != '\0') {
+                continue;
+            }
+
+            /* The name is ASCII, which is safe to use as UTF-8 */
+            strcpy(name, pkt->entries[i].ch_name);
+        }
+
+        /* Make sure the names look sane */
+        if(pkt->entries[i].lobby_name[31]) {
+            continue;
+        }
+
+        /* Grab the integers out */
+        gc = ntohl(pkt->entries[i].guildcard);
+        lid = ntohl(pkt->entries[i].lobby);
+        dlid = ntohl(pkt->entries[i].dlobby);
 
         /* Escape the name string */
         sylverant_db_escape_str(&conn, tmp, name, strlen(name));
@@ -2175,9 +2353,9 @@ static int handle_block_clients(ship_t *c, shipgate_block_clients_pkt *pkt) {
             sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
                                     strlen(pkt->entries[i].lobby_name));
             sprintf(query, "INSERT INTO online_clients(guildcard, name, "
-                    "ship_id, block, lobby_id, lobby) VALUES('%u', '%s', "
-                    "'%hu', '%u', '%u', '%s')", gc, tmp, c->key_idx, bl, lid,
-                    tmp2);
+                    "ship_id, block, lobby_id, lobby, dlobby_id) VALUES('%u', "
+                    "'%s', '%hu', '%u', '%u', '%s', '%u')", gc, tmp, c->key_idx,
+                    bl, lid, tmp2, dlid);
         }
 
         /* Run the query */
@@ -2634,7 +2812,10 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_lobby_chg(c, (shipgate_lobby_change_pkt *)pkt);
 
         case SHDR_TYPE_BCLIENTS:
-            return handle_block_clients(c, (shipgate_block_clients_pkt *)pkt);
+            if(c->proto_ver < 12) 
+                return handle_block_clients(c, (shipgate_bclients_pkt *)pkt);
+            else
+                return handle_clients12(c, (shipgate_bclients_12_pkt *)pkt);
 
         case SHDR_TYPE_KICK:
             return handle_kick(c, (shipgate_kick_pkt *)pkt);
