@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -2745,6 +2745,86 @@ static int handle_bbopts(ship_t *c, shipgate_bb_opts_pkt *pkt) {
     return 0;
 }
 
+static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
+    char query[256];
+    uint32_t gc, ct, acc;
+    int i;
+    void *result;
+    char **row;
+
+    /* Parse out the guildcard */
+    gc = ntohl(pkt->guildcard);
+
+    /* Find the user's account id */
+    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%"
+            PRIu32 "'", gc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't fetch account data (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR, 
+                          (uint8_t *)&pkt->guildcard, 16);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_WARN, "Couldn't fetch account data (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* If their account id in the table is NULL, then bail. No need to report an
+       error for this. */
+    if(!row[0]) {
+        sylverant_db_result_free(result);
+        return 0;
+    }
+
+    /* We've verified they've got an account, continue on. */
+    acc = atoi(row[0]);
+    sylverant_db_result_free(result);
+
+    /* Ignore these for now for most people... :P */
+    if(acc != 1)
+        return 0;
+
+    /* Go through each entry... */
+    for(i = 0; i < 0x60; ++i) {
+        ct = ntohl(pkt->counts[i]);
+
+        if(!ct)
+            continue;
+
+        sprintf(query, "INSERT INTO monster_kills (account_id, guildcard, "
+                "episode, difficulty, enemy, count) VALUES('%" PRIu32 "', "
+                "'%" PRIu32 "', '%u', '%u', '%d', '%" PRIu32"') ON DUPLICATE "
+                "KEY UPDATE count=count+VALUES(count)", acc, gc,
+                (unsigned int)pkt->episode, (unsigned int)pkt->difficulty, i,
+                ct);
+
+        /* Execute the query */
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+            return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR,
+                              (uint8_t *)&pkt->guildcard, 8);
+        }
+    }
+
+    return 0;
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -2838,6 +2918,9 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_CBKUP:
             return handle_cbkup(c, (shipgate_char_bkup_pkt *)pkt);
+
+        case SHDR_TYPE_MKILL:
+            return handle_mkill(c, (shipgate_mkill_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);
