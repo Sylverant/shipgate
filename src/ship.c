@@ -319,7 +319,7 @@ void destroy_connection(ship_t *c) {
 
 /* Handle a ship's login response. */
 static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
-    char query[256];
+    char query[512];
     ship_t *j;
     void *result;
     char **row;
