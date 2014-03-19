@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -61,7 +61,7 @@ static int dont_daemonize = 0;
 /* Print information about this program to stdout. */
 static void print_program_info() {
     printf("Sylverant Shipgate version %s\n", VERSION);
-    printf("Copyright (C) 2009, 2010, 2011 Lawrence Sebald\n\n");
+    printf("Copyright (C) 2009, 2010, 2011, 2012, 2014 Lawrence Sebald\n\n");
     printf("This program is free software: you can redistribute it and/or\n"
            "modify it under the terms of the GNU Affero General Public\n"
            "License version 3 as published by the Free Software Foundation.\n\n"

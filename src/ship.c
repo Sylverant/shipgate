@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -1933,13 +1933,13 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
         /* Silently fail here (to the ship anyway), since this doesn't spell
            doom at all for the logged in user */
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return 0;
+        goto skip_friends;
     }
 
     /* Grab any results we got */
     if(!(result = sylverant_db_result_store(&conn))) {
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return 0;
+        goto skip_friends;
     }
 
     /* For each bite we get, send out a friend login packet */
@@ -1957,6 +1957,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
 
     sylverant_db_result_free(result);
 
+skip_friends:
     /* See what options we have to deliver to the user */
     sprintf(query, "SELECT opt, value FROM user_options WHERE "
             "guildcard='%u'", gc);
@@ -1967,13 +1968,13 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
            doom at all for the logged in user (although, it might spell some
            inconvenience, potentially) */
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return 0;
+        goto skip_opts;
     }
 
     /* Grab any results we got */
     if(!(result = sylverant_db_result_store(&conn))) {
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return 0;
+        goto skip_opts;
     }
 
     /* Begin the options packet */
@@ -1993,6 +1994,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* We're done, send it */
     send_user_options(c);
 
+skip_opts:
     /* We're done (no need to tell the ship on success) */
     return 0;
 }
