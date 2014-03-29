@@ -46,6 +46,8 @@ sylverant_dbconn_t conn;
 /* Various iconv contexts we'll use */
 iconv_t ic_utf8_to_utf16;
 iconv_t ic_utf16_to_utf8;
+iconv_t ic_sjis_to_utf8;
+iconv_t ic_8859_to_utf8;
 
 /* GnuTLS data... */
 gnutls_certificate_credentials_t tls_cred;
@@ -521,6 +523,18 @@ int main(int argc, char *argv[]) {
     ic_utf16_to_utf8 = iconv_open("UTF-8", "UTF-16LE");
     if(ic_utf16_to_utf8 == (iconv_t)-1) {
         debug(DBG_ERROR, "Cannot create iconv context (UTF-16 to UTF-8)\n");
+        exit(EXIT_FAILURE);
+    }
+
+    ic_sjis_to_utf8 = iconv_open("UTF-8", "SHIFT_JIS");
+    if(ic_sjis_to_utf8 == (iconv_t)-1) {
+        debug(DBG_ERROR, "Cannot create iconv context (Shift-JIS to UTF-8)\n");
+        exit(EXIT_FAILURE);
+    }
+
+    ic_8859_to_utf8 = iconv_open("UTF-8", "ISO-8859-1");
+    if(ic_8859_to_utf8 == (iconv_t)-1) {
+        debug(DBG_ERROR, "Cannot create iconv context (ISO-8859-1 to UTF-8)\n");
         exit(EXIT_FAILURE);
     }
 

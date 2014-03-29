@@ -43,12 +43,20 @@
 #define CLIENT_PRIV_LOCAL_ROOT  0x00000004
 #define CLIENT_PRIV_GLOBAL_ROOT 0x00000008
 
+#define VERSION_DC              0
+#define VERSION_PC              1
+#define VERSION_GC              2
+#define VERSION_EP3             3
+#define VERSION_BB              4
+
 /* Database connection */
 extern sylverant_dbconn_t conn;
 
 /* iconv contexts */
 extern iconv_t ic_utf8_to_utf16;
 extern iconv_t ic_utf16_to_utf8;
+extern iconv_t ic_sjis_to_utf8;
+extern iconv_t ic_8859_to_utf8;
 
 /* GnuTLS data... */
 extern gnutls_certificate_credentials_t tls_cred;
@@ -450,6 +458,152 @@ static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
     return 0;
 }
 
+static size_t strlen16(const uint16_t *str) {
+    size_t sz = 0;
+
+    while(*str++) ++sz;
+    return sz;
+}
+
+static int save_mail(uint32_t gc, uint32_t from, void *pkt, int version) {
+    char msg[512], name[64];
+    static char query[2048];
+    void *result;
+    char **row;
+    size_t in, out, nmlen;
+    ICONV_CONST char *inptr;
+    char *outptr;
+    dc_simple_mail_pkt *dcpkt = (dc_simple_mail_pkt *)pkt;
+    pc_simple_mail_pkt *pcpkt = (pc_simple_mail_pkt *)pkt;
+    bb_simple_mail_pkt *bbpkt = (bb_simple_mail_pkt *)pkt;
+
+    /* See if the user is registered first. */
+    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%u'",
+            gc);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "save_mail: cannot query for account: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "save_mail: Cannot fetch result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the result set */
+    if(!(row = sylverant_db_result_fetch(result))) {
+        debug(DBG_WARN, "save_mail: Invalid guildcard: %u (sent by %u)\n",
+              gc, from);
+        sylverant_db_result_free(result);
+        return 0;
+    }
+
+    /* Is there an account_id associated with the guildcard? */
+    if(row[0] == NULL) {
+        /* No account associated with the guildcard, so we're done. */
+        sylverant_db_result_free(result);
+        return 0;
+    }
+
+    /* We're done with the result set, so clean it up. */
+    sylverant_db_result_free(result);
+
+    /* Convert the message to UTF-8 for storage. */
+    switch(version) {
+        case VERSION_DC:
+        case VERSION_GC:
+        case VERSION_EP3:
+            dcpkt->stuff[144] = 0;
+            in = strlen(dcpkt->stuff);
+            out = 511;
+            inptr = dcpkt->stuff;
+            outptr = msg;
+
+            if(inptr[0] == '\t' && inptr[1] == 'J')
+                iconv(ic_sjis_to_utf8, &inptr, &in, &outptr, &out);
+            else
+                iconv(ic_8859_to_utf8, &inptr, &in, &outptr, &out);
+
+            msg[511 - out] = 0;
+            memcpy(name, dcpkt->name, 16);
+            name[16] = 0;
+            nmlen = strlen(name);
+            break;
+
+        case VERSION_PC:
+            pcpkt->stuff[288] = 0;
+            pcpkt->stuff[289] = 0;
+            in = strlen16((uint16_t *)pcpkt->stuff) * 2;
+            out = 511;
+            inptr = (char *)pcpkt->stuff;
+            outptr = msg;
+
+            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
+
+            msg[511 - out] = 0;
+
+            in = (strlen16(pcpkt->name) * 2);
+            nmlen = 0x40;
+            inptr = (char *)pcpkt->name;
+            outptr = name;
+
+            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &nmlen);
+            nmlen = 64 - nmlen;
+            name[nmlen] = 0;
+            break;
+
+        case VERSION_BB:
+            bbpkt->unk2[0] = 0;
+            bbpkt->unk2[1] = 0;
+            in = strlen16(bbpkt->message) * 2;
+            out = 511;
+            inptr = (char *)bbpkt->message;
+            outptr = msg;
+
+            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
+
+            msg[511 - out] = 0;
+
+            in = (strlen16(bbpkt->name) * 2) - 4;
+            nmlen = 0x40;
+            inptr = (char *)&bbpkt->name[2];
+            outptr = name;
+
+            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &nmlen);
+            nmlen = 64 - nmlen;
+            name[nmlen] = 0;
+            break;
+
+        default:
+            /* XXXX */
+            return 0;
+    }
+
+    /* Fill in the query. */
+    sprintf(query, "INSERT INTO simple_mail(recipient, sender, sent_time, "
+            "sender_name, message) VALUES ('%u', '%u', UNIX_TIMESTAMP(), '", gc,
+            from);
+    sylverant_db_escape_str(&conn, query + strlen(query), name, nmlen);
+
+    strcat(query, "', '");
+    sylverant_db_escape_str(&conn, query + strlen(query), msg, 511 - out);
+    strcat(query, "');");
+
+    /* Execute the query on the db. */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't save simple mail (to: %" PRIu32 " from: %"
+              PRIu32 ")\n", gc, from);
+        debug(DBG_WARN, "    %s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* And... we're done! */
+    return 0;
+}
+
 static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
     char query[256];
@@ -474,9 +628,9 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* The user's not online, give up. */
+        /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return 0;
+        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_DC);
     }
 
     /* Grab the data from the result */
@@ -525,9 +679,9 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* The user's not online, give up. */
+        /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return 0;
+        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_PC);
     }
 
     /* Grab the data from the result */
@@ -576,9 +730,9 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     }
 
     if(!(row = sylverant_db_result_fetch(result))) {
-        /* The user's not online, give up. */
+        /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return 0;
+        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_BB);
     }
 
     /* Grab the data from the result */
@@ -1995,6 +2149,71 @@ skip_friends:
     send_user_options(c);
 
 skip_opts:
+    /* See if the user has an account or not. */
+    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%"
+            PRIu32 "'", gc);
+
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        /* Silently fail here (to the ship anyway), since this doesn't spell
+           doom at all for the logged in user (although, it might spell some
+           inconvenience, potentially) */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_mail;
+    }
+
+    /* Grab any results we got */
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_mail;
+    }
+
+    /* Find the account_id, if any. */
+    if(!(row = sylverant_db_result_fetch(result)) || !row[0])
+        goto skip_mail;
+
+    gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+    sylverant_db_result_free(result);
+
+    /* See whether the user has any saved mail. */
+    sprintf(query, "SELECT COUNT(*) FROM simple_mail INNER JOIN guildcards ON "
+            "simple_mail.recipient = guildcards.guildcard WHERE "
+            "guildcards.account_id='%" PRIu32 "' AND simple_mail.status='0'",
+            gc2);
+
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        /* Silently fail here (to the ship anyway), since this doesn't spell
+           doom for the logged in user */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_mail;
+    }
+
+    /* Grab any results we got */
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_mail;
+    }
+
+    /* Look at the number from the result set. */
+    row = sylverant_db_result_fetch(result);
+    opt = (uint32_t)strtoul(row[0], NULL, 0);
+
+    /* Do they have any mail waiting for them? */
+    if(opt) {
+        if(opt > 1)
+            sprintf(query, "\tEYou have %" PRIu32 " unread messages. Please "
+                    "visit the server website to read your mail.", opt);
+        else
+            sprintf(query, "\tEYou have an unread message. Please visit the "
+                    "server website to read your mail.");
+
+        send_simple_mail(c, gc, bl, 2, "Sys.Message", query);
+    }
+
+    sylverant_db_result_free(result);
+
+skip_mail:
     /* We're done (no need to tell the ship on success) */
     return 0;
 }

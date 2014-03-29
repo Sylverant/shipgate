@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -559,5 +559,22 @@ int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
 
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_bb_opts_pkt));
+}
 
+/* Send a system-generated simple mail message. */
+int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
+                     const char *name, const char *msg) {
+    dc_simple_mail_pkt pkt;
+
+    /* Set up the mail. */
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.hdr.pkt_type = SIMPLE_MAIL_TYPE;
+    pkt.hdr.pkt_len = LE16(DC_SIMPLE_MAIL_LENGTH);
+    pkt.tag = LE32(0x00010000);
+    pkt.gc_sender = LE32(sender);
+    strncpy(pkt.name, name, 16);
+    pkt.gc_dest = LE32(gc);
+    strncpy(pkt.stuff, msg, 0x90);
+
+    return forward_dreamcast(c, (dc_pkt_hdr_t *)&pkt, c->key_idx, gc, block);
 }

@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -556,5 +556,9 @@ int send_user_options(ship_t *c);
 /* Send a packet containing a user's Blue Burst options */
 int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
                  sylverant_bb_db_opts_t *opts);
+
+/* Send a system-generated simple mail message. */
+int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
+                     const char *name, const char *msg);
 
 #endif /* !SHIPGATE_H */
