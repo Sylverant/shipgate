@@ -1,7 +1,7 @@
 #  
 #   This file is part of Sylverant PSO Server.
 #  
-#   Copyright (C) 2009 Lawrence Sebald
+#   Copyright (C) 2009, 2014 Lawrence Sebald
 #  
 #   This program is free software: you can redistribute it and/or modify
 #   it under the terms of the GNU Affero General Public License version 3
@@ -17,7 +17,7 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
-LIBS += $(MYSQL_LIBS)
+LIBS += $(MYSQL_LIBS) $(LIBICONV)
 
 bin_PROGRAMS = shipgate
 shipgate_SOURCES = src/packets.c src/ship.c src/ship.h src/ship_packets.h \
