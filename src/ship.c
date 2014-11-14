@@ -239,7 +239,7 @@ ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
         goto err;
     }
-    
+
     if((result = sylverant_db_result_store(&conn)) == NULL ||
        (row = sylverant_db_result_fetch(result)) == NULL) {
         debug(DBG_WARN, "Unknown SHA1 fingerprint");
@@ -250,7 +250,7 @@ ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     rv->key_idx = atoi(row[0]);
     sylverant_db_result_free(result);
     gnutls_x509_crt_deinit(cert);
-    
+
     /* Send the client the welcome packet, or die trying. */
     if(send_welcome(rv)) {
         goto err;
@@ -335,6 +335,7 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     uint16_t menu_code = ntohs(pkt->menu_code);
     int ship_number;
     uint64_t ip6_hi, ip6_lo;
+    uint32_t clients = 0;
 
     /* Check the protocol version for support (TLS first supported in v10) */
     if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
@@ -430,6 +431,18 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
         if(j != c) {
             send_ship_status(c, j, 1);
         }
+
+        clients += j->clients;
+    }
+
+    /* Update the table of client counts, if it might have actually changed from
+       this update packet. */
+    if(c->clients) {
+        sprintf(query, "INSERT INTO client_count (clients) VALUES('%" PRIu32
+                "') ON DUPLICATE KEY UPDATE clients=VALUES(clients)", clients);
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "Couldn't update global player/game count");
+        }
     }
 
     return 0;
@@ -439,6 +452,8 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
 static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
     char query[256];
     ship_t *j;
+    uint32_t clients = 0;
+    uint16_t sclients = c->clients;
 
     c->clients = ntohs(pkt->clients);
     c->games = ntohs(pkt->games);
@@ -453,6 +468,17 @@ static int handle_count(ship_t *c, shipgate_cnt_pkt *pkt) {
     /* Update all of the ships */
     TAILQ_FOREACH(j, &ships, qentry) {
         send_counts(j, c->key_idx, c->clients, c->games);
+        clients += j->clients;
+    }
+
+    /* Update the table of client counts, if the number actually changed from
+       this update packet. */
+    if(sclients != c->clients) {
+        sprintf(query, "INSERT INTO client_count (clients) VALUES('%" PRIu32
+                "') ON DUPLICATE KEY UPDATE clients=VALUES(clients)", clients);
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "Couldn't update global player/game count");
+        }
     }
 
     return 0;
@@ -1128,7 +1154,7 @@ static int handle_bb_gcadd(ship_t *c, shipgate_fw_9_pkt *pkt) {
     /* Add the entry in the db... */
     sprintf(query, "INSERT INTO blueburst_guildcards (guildcard, friend_gc, "
             "name, team_name, text, language, section_id, class) VALUES ('%"
-            PRIu32 "', '%" PRIu32 "', '%s', '%s', '%s', '%" PRIu8 "', '%" 
+            PRIu32 "', '%" PRIu32 "', '%s', '%s', '%s', '%" PRIu8 "', '%"
             PRIu8 "', '%" PRIu8 "') ON DUPLICATE KEY UPDATE "
             "name=VALUES(name), text=VALUES(text), language=VALUES(language), "
             "section_id=VALUES(section_id), class=VALUES(class)", sender,
@@ -1234,7 +1260,7 @@ static int handle_bb_blacklistadd(ship_t *c, shipgate_fw_9_pkt *pkt) {
     /* Add the entry in the db... */
     sprintf(query, "INSERT INTO blueburst_blacklist (guildcard, blocked_gc, "
             "name, team_name, text, language, section_id, class) VALUES ('%"
-            PRIu32 "', '%" PRIu32 "', '%s', '%s', '%s', '%" PRIu8 "', '%" 
+            PRIu32 "', '%" PRIu32 "', '%s', '%s', '%s', '%" PRIu8 "', '%"
             PRIu8 "', '%" PRIu8 "') ON DUPLICATE KEY UPDATE "
             "name=VALUES(name), text=VALUES(text), language=VALUES(language), "
             "section_id=VALUES(section_id), class=VALUES(class)", sender,
@@ -1738,7 +1764,7 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
             debug(DBG_WARN, "Couldn't allocate for uncompressed data\n");
             debug(DBG_WARN, "%s\n", strerror(errno));
             sylverant_db_result_free(result);
-            
+
             send_error(c, SHDR_TYPE_CREQ, SHDR_RESPONSE | SHDR_FAILURE,
                        ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
             return 0;
@@ -1913,7 +1939,7 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
         debug(DBG_WARN, "Couldn't fetch account data (%u)\n", req);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR, 
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->req_gc, 16);
     }
 
@@ -1948,7 +1974,7 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
         debug(DBG_WARN, "Couldn't fetch account data (%u)\n", target);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR, 
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->req_gc, 16);
     }
 
@@ -2013,7 +2039,7 @@ static int handle_ban(ship_t *c, shipgate_ban_req_pkt *pkt, uint16_t type) {
         debug(DBG_WARN, "Could not insert ban into database (part 2)\n");
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR, 
+        return send_error(c, type, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->req_gc, 16);
     }
 
@@ -2646,7 +2672,7 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
 
         return 0;
     }
-    
+
     /* Grab the data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
         debug(DBG_WARN, "Couldn't fetch account data (%u)\n", gc);
@@ -2750,7 +2776,7 @@ static int handle_frlist_req(ship_t *c, shipgate_friend_list_req *pkt) {
     /* Fetch our max of 5 entries... i will be left as the number found */
     for(i = 0; i < 5 && (row = sylverant_db_result_fetch(result)); ++i) {
         entries[i].guildcard = htonl(strtoul(row[0], NULL, 0));
-        
+
         if(row[2]) {
             entries[i].ship = htonl(strtoul(row[2], NULL, 0));
         }
@@ -2984,7 +3010,7 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
         debug(DBG_WARN, "Couldn't fetch account data (%" PRIu32 ")\n", gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR, 
+        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 16);
     }
 
@@ -3114,7 +3140,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_lobby_chg(c, (shipgate_lobby_change_pkt *)pkt);
 
         case SHDR_TYPE_BCLIENTS:
-            if(c->proto_ver < 12) 
+            if(c->proto_ver < 12)
                 return handle_block_clients(c, (shipgate_bclients_pkt *)pkt);
             else
                 return handle_clients12(c, (shipgate_bclients_12_pkt *)pkt);
@@ -3165,7 +3191,7 @@ int handle_pkt(ship_t *c) {
        the rest of this a bit easier. */
     if(c->recvbuf_cur) {
         memcpy(recvbuf, c->recvbuf, c->recvbuf_cur);
-        
+
     }
 
     /* Attempt to read, and if we don't get anything, punt. */
