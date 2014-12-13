@@ -40,11 +40,13 @@ static int send_raw(ship_t *c, int len) {
         while(total < len) {
             rv = ship_send(c, sendbuf + total, len - total);
 
-            if(rv == -1 && errno != EAGAIN) {
-                return -1;
-            }
-            else if(rv == -1) {
-                break;
+            /* Did the data send? */
+            if(rv < 0) {
+                /* Is it an error code that might be correctable? */
+                if(rv == GNUTLS_E_AGAIN || rv == GNUTLS_E_INTERRUPTED)
+                    continue;
+                else
+                    return -1;
             }
 
             total += rv;
@@ -290,7 +292,7 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz,
     pkt->guildcard = htonl(gc);
     pkt->slot = htonl(slot);
     pkt->block = block;
-    memcpy(pkt->data, cdata, sz); 
+    memcpy(pkt->data, cdata, sz);
 
     /* Send it away. */
     return send_crypt(c, sizeof(shipgate_char_data_pkt) + sz);
