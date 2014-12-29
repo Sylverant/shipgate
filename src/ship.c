@@ -3038,20 +3038,14 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
     char **row;
     monster_event_t *ev;
 
-    printf("got monster kill packet\n");
-
     /* Ignore any packets that aren't version 1 or later. They're useless. */
     if(pkt->hdr.version < 1)
         return 0;
-
-    printf("didn't drop\n");
 
     /* See if there's an event currently running, otherwise we can safely drop
        any monster kill packets we get. */
     if(!(ev = find_current_event(pkt->difficulty, pkt->version)))
         return 0;
-
-    printf("got current event\n");
 
     /* Parse out the guildcard */
     gc = ntohl(pkt->guildcard);
@@ -3089,7 +3083,6 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
     /* If their account id in the table is NULL, then bail. No need to report an
        error for this. */
     if(!row[0]) {
-        printf("no account\n");
         sylverant_db_result_free(result);
         return 0;
     }
@@ -3100,14 +3093,11 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
 
     /* Are we recording all monsters, or just a few? */
     if(ev->monster_count) {
-        printf("have monsters\n");
         for(i = 0; i < ev->monster_count; ++i) {
-            printf("looking for monster %d\n", ev->monsters[i].monster);
             if(ev->monsters[i].monster > 0x60)
                 continue;
 
             ct = ntohl(pkt->counts[ev->monsters[i].monster]);
-            printf("got count of %d\n", (int)ct);
 
             if(!ct || pkt->episode != ev->monsters[i].episode)
                 continue;
@@ -3129,8 +3119,6 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
 
         return 0;
     }
-
-    printf("no monsters listed\n");
 
     /* Go through each entry... */
     for(i = 0; i < 0x60; ++i) {
