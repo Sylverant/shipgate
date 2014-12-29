@@ -68,9 +68,8 @@ static int send_raw(ship_t *c, int len) {
             tmp = realloc(c->sendbuf, c->sendbuf_cur + rv);
 
             /* If we can't allocate the space, bail. */
-            if(tmp == NULL) {
+            if(tmp == NULL)
                 return -1;
-            }
 
             c->sendbuf_size = c->sendbuf_cur + rv;
             c->sendbuf = (unsigned char *)tmp;
@@ -87,9 +86,8 @@ static int send_raw(ship_t *c, int len) {
 /* Encrypt a packet, and send it away. */
 static int send_crypt(ship_t *c, int len) {
     /* Make sure its at least a header in length. */
-    if(len < 8) {
+    if(len < 8)
         return -1;
-    }
 
     return send_raw(c, len);
 }
@@ -224,9 +222,8 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
     shipgate_ship_status6_pkt *pkt = (shipgate_ship_status6_pkt *)sendbuf;
 
     /* If the ship hasn't finished logging in yet, don't send this. */
-    if(o->name[0] == 0) {
+    if(o->name[0] == 0)
         return 0;
-    }
 
     /* Scrub the buffer */
     memset(pkt, 0, sizeof(shipgate_ship_status6_pkt));
@@ -265,12 +262,10 @@ int send_ping(ship_t *c, int reply) {
     pkt->reserved = 0;
     pkt->version = 0;
 
-    if(reply) {
+    if(reply)
         pkt->flags = htons(SHDR_RESPONSE);
-    }
-    else {
+    else
         pkt->flags = 0;
-    }
 
     /* Send it away. */
     return send_crypt(c, sizeof(shipgate_hdr_t));
@@ -347,15 +342,9 @@ int send_error(ship_t *c, uint16_t type, uint16_t flags, uint32_t err,
     shipgate_error_pkt *pkt = (shipgate_error_pkt *)sendbuf;
     uint16_t sz;
 
-    /* These were first added in protocol version 1. */
-    if(c->proto_ver < 1) {
-        return 0;
-    }
-
     /* Make sure the data size is valid */
-    if(data_sz > 65536 - sizeof(shipgate_error_pkt)) {
+    if(data_sz > 65536 - sizeof(shipgate_error_pkt))
         return -1;
-    }
 
     /* Clear the header of the packet */
     memset(pkt, 0, sizeof(shipgate_error_pkt));
@@ -427,9 +416,8 @@ int send_kick(ship_t *c, uint32_t requester, uint32_t user, uint32_t block,
     pkt->guildcard = htonl(user);
     pkt->block = htonl(block);
 
-    if(reason) {
+    if(reason)
         strncpy(pkt->reason, reason, 64);
-    }
 
     /* Send the packet away */
     return send_crypt(c, sizeof(shipgate_kick_pkt));
@@ -531,9 +519,8 @@ int send_user_options(ship_t *c) {
     uint16_t len = pkt->hdr.pkt_len;
 
     /* Make sure we have something to send, at least */
-    if(!pkt->count) {
+    if(!pkt->count)
         return 0;
-    }
 
     /* Swap that which we need to do */
     pkt->hdr.pkt_len = htons(len);

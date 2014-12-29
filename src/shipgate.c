@@ -56,6 +56,10 @@ static gnutls_dh_params_t dh_params;
 
 int shutting_down = 0;
 
+/* Events... */
+uint32_t event_count;
+monster_event_t *events;
+
 static const char *config_file = NULL;
 static const char *custom_dir = NULL;
 static int dont_daemonize = 0;
@@ -72,7 +76,7 @@ static void print_program_info() {
            "MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
            "GNU General Public License for more details.\n\n"
            "You should have received a copy of the GNU Affero General Public\n"
-           "License along with this program.  If not, see"
+           "License along with this program.  If not, see\n"
            "<http://www.gnu.org/licenses/>.\n");
 }
 
@@ -176,6 +180,178 @@ static void cleanup_gnutls() {
     gnutls_global_deinit();
 }
 
+static void free_events() {
+    uint32_t i;
+
+    for(i = 0; i < event_count; ++i) {
+        free(events[i].monsters);
+    }
+
+    free(events);
+}
+
+static int read_events_table() {
+    void *result;
+    char **row;
+    long long row_count, i, row_count2, j;
+    char query[256];
+
+    debug(DBG_LOG, "Reading events from the database...\n");
+    if(sylverant_db_query(&conn, "SELECT event_id, title, start_time, "
+                                 "end_time, difficulties, versions, "
+                                 "allow_quests FROM monster_events WHERE "
+                                 "end_time > UNIX_TIMESTAMP() ORDER BY "
+                                 "start_time")) {
+        debug(DBG_WARN, "Couldn't fetch events from database!\n");
+        return -1;
+    }
+
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Could not store results of event select!\n");
+        return -1;
+    }
+
+    /* Make sure we have something. */
+    row_count = sylverant_db_result_rows(result);
+    if(row_count < 0) {
+        debug(DBG_WARN, "Couldn't fetch event count!\n");
+        sylverant_db_result_free(result);
+        return -1;
+    }
+    else if(!row_count) {
+        debug(DBG_LOG, "No events in database.\n");
+        sylverant_db_result_free(result);
+        return 0;
+    }
+
+    /* Allocate space for the events... */
+    events = (monster_event_t *)malloc(row_count * sizeof(monster_event_t));
+    if(!events) {
+        debug(DBG_WARN, "Error allocating memory for events!\n");
+        sylverant_db_result_free(result);
+        return -1;
+    }
+
+    memset(events, 0, row_count * sizeof(monster_event_t));
+    event_count = (uint32_t)row_count;
+
+    /* Save each one. */
+    i = 0;
+    while((row = sylverant_db_result_fetch(result))) {
+        /* This shouldn't ever happen... but whatever, doesn't hurt to check. */
+        if(i >= row_count) {
+            debug(DBG_WARN, "Got more result rows than expected?!\n");
+            sylverant_db_result_free(result);
+            free(events);
+            return -1;
+        }
+
+        /* Copy the data over. */
+        events[i].event_id = strtoul(row[0], NULL, 0);
+        events[i].start_time = strtoul(row[2], NULL, 0);
+        events[i].end_time = strtoul(row[3], NULL, 0);
+        events[i].difficulties = (uint8_t)strtoul(row[4], NULL, 0);
+        events[i].versions = (uint8_t)strtoul(row[5], NULL, 0);
+        events[i].allow_quests = (uint8_t)strtoul(row[6], NULL, 0);
+
+        if(!(events[i].event_title = strdup(row[1]))) {
+            debug(DBG_WARN, "Error copying event title!\n");
+            sylverant_db_result_free(result);
+            free(events);
+            return -1;
+        }
+
+        ++i;
+    }
+
+    sylverant_db_result_free(result);
+
+    if(i < row_count) {
+        debug(DBG_WARN, "Got less result rows than expected?!\n");
+        free(events);
+        return -1;
+    }
+
+    /* Run through each event and read the monster lists... */
+    for(i = 0; i < row_count; ++i) {
+        sprintf(query, "SELECT monster_type, episode FROM "
+                       "monster_event_monsters WHERE event_id= '%" PRIu32 "'",
+                events[i].event_id);
+
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "Couldn't fetch monsters from database!\n");
+            free_events();
+            return -1;
+        }
+
+        if((result = sylverant_db_result_store(&conn)) == NULL) {
+            debug(DBG_WARN, "Could not store results of monster select!");
+            free_events();
+            return -1;
+        }
+
+        /* Make sure we have something. */
+        row_count2 = sylverant_db_result_rows(result);
+        events[i].monster_count = (uint32_t)row_count2;
+
+        debug(DBG_LOG, "Event ID %" PRIu32 " (%s) - %" PRIu32 " enemies.\n",
+              events[i].event_id, events[i].event_title,
+              events[i].monster_count);
+
+        if(row_count2 == 0) {
+            sylverant_db_result_free(result);
+            continue;
+        }
+        /* This shouldn't happen, but check anyway... */
+        else if(row_count2 < 0 || row_count2 > 256) {
+            sylverant_db_result_free(result);
+            debug(DBG_WARN, "Got less than zero monsters in event?!\n");
+            free_events();
+            return -1;
+        }
+
+        /* Allocate space for the monsters... */
+        events[i].monsters =
+            (event_monster_t *)malloc(row_count2 * sizeof(event_monster_t));
+        if(!events[i].monsters) {
+            debug(DBG_WARN, "Error allocating memory for monsters!\n");
+            sylverant_db_result_free(result);
+            free_events();
+            return -1;
+        }
+
+        memset(events[i].monsters, 0, row_count2 * sizeof(event_monster_t));
+
+        j = 0;
+        while((row = sylverant_db_result_fetch(result))) {
+            /* Once again, shouldn't happen, but check anyway... */
+            if(j >= row_count2) {
+                debug(DBG_WARN, "Got more result rows than expected?!\n");
+                sylverant_db_result_free(result);
+                free_events();
+                return -1;
+            }
+
+            events[i].monsters[j].monster = (uint16_t)strtoul(row[0], NULL, 0);
+            events[i].monsters[j].episode = (uint8_t)strtoul(row[1], NULL, 0);
+            ++j;
+        }
+
+        sylverant_db_result_free(result);
+
+        /* Same warning about it shouldn't happen applies here... */
+        if(j < row_count2) {
+            debug(DBG_WARN, "Got less result rows than expected?!\n");
+            free_events();
+            return -1;
+        }
+    }
+
+    debug(DBG_LOG, "Read %" PRIu32 " events successfully.\n", event_count);
+
+    return 0;
+}
+
 static void open_db() {
     debug(DBG_LOG, "Connecting to the database...\n");
 
@@ -193,6 +369,10 @@ static void open_db() {
     debug(DBG_LOG, "Clearing online_clients...\n");
     if(sylverant_db_query(&conn, "DELETE FROM online_clients")) {
         debug(DBG_ERROR, "Error clearing online_clients\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if(read_events_table()) {
         exit(EXIT_FAILURE);
     }
 }
@@ -269,7 +449,7 @@ void run_server(int tsock, int tsock6) {
         if(tsock6 > -1) {
             FD_SET(tsock6, &readfds);
             nfds = nfds > tsock6 ? nfds : tsock6;
-        }        
+        }
 
         if(select(nfds + 1, &readfds, &writefds, NULL, &timeout) > 0) {
             /* Check each ship's socket for activity. */
@@ -423,13 +603,13 @@ static int open_sock(int family, uint16_t port) {
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
         addr.sin_port = htons(port);
-        
+
         if(bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in))) {
             perror("bind");
             close(sock);
             return -1;
         }
-        
+
         if(listen(sock, 10)) {
             perror("listen");
             close(sock);
@@ -556,6 +736,7 @@ int main(int argc, char *argv[]) {
     /* Clean up. */
     close(tsock);
     close(tsock6);
+    free_events();
     iconv_close(ic_utf8_to_utf16);
     iconv_close(ic_utf16_to_utf8);
     sylverant_db_close(&conn);

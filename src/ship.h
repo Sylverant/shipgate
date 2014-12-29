@@ -51,6 +51,24 @@ typedef struct friendlist_data {
     char name[32];
 } PACKED friendlist_data_t;
 
+typedef struct event_monster {
+    uint16_t monster;
+    uint8_t episode;
+    uint8_t reserved;
+} PACKED event_monster_t;
+
+typedef struct monster_event {
+    uint32_t event_id;
+    char *event_title;
+    uint32_t start_time;
+    uint32_t end_time;
+    uint8_t difficulties;
+    uint8_t versions;
+    uint8_t allow_quests;
+    uint32_t monster_count;
+    event_monster_t *monsters;
+} monster_event_t;
+
 #undef PACKED
 
 typedef struct ship {

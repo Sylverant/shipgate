@@ -62,6 +62,10 @@ extern iconv_t ic_8859_to_utf8;
 extern gnutls_certificate_credentials_t tls_cred;
 extern gnutls_priority_t tls_prio;
 
+/* Events... */
+extern uint32_t event_count;
+extern monster_event_t *events;
+
 static uint8_t recvbuf[65536];
 
 /* Find a ship by its id */
@@ -114,6 +118,38 @@ static inline void parse_ipv6(uint64_t hi, uint64_t lo, uint8_t buf[16]) {
     buf[13] = (uint8_t)(lo >> 16);
     buf[14] = (uint8_t)(lo >> 8);
     buf[15] = (uint8_t)lo;
+}
+
+static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver) {
+    uint32_t i;
+    uint8_t questing;
+    time_t now;
+
+    /* For now, just reject any challenge/battle mode updates... We don't care
+       about them at all. */
+    if(ver & 0xC0)
+        return NULL;
+
+    now = time(NULL);
+    questing = ver & 0x20;
+    ver &= 0x07;
+
+    for(i = 0; i < event_count; ++i) {
+        /* Skip all quests that don't meet the requirements passed in. */
+        if(now > events[i].end_time || now < events[i].start_time)
+            continue;
+        if(!(events[i].versions & (1 << ver)))
+            continue;
+        if(!(events[i].difficulties & (1 << difficulty)))
+            continue;
+        if(!events[i].allow_quests && questing)
+            continue;
+
+        /* If we get here, then the event is valid, return it. */
+        return events + i;
+    }
+
+    return NULL;
 }
 
 /* Create a new connection, storing it in the list of ships. */
@@ -178,7 +214,8 @@ ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
 
     /* Check whether or not the peer is trusted... */
     if(peer_status & GNUTLS_CERT_INVALID) {
-        debug(DBG_WARN, "Untrusted peer connection, reason below:\n");
+        debug(DBG_WARN, "Untrusted peer connection, reason below (%08x):\n",
+              peer_status);
 
         if(peer_status & GNUTLS_CERT_SIGNER_NOT_FOUND)
             debug(DBG_WARN, "No issuer found\n");
@@ -2890,6 +2927,7 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
         case USER_OPT_QUEST_LANG:
         case USER_OPT_ENABLE_BACKUP:
         case USER_OPT_GC_PROTECT:
+        case USER_OPT_TRACK_KILLS:
             /* The full option should be 16 bytes */
             if(optlen != 16) {
                 return -4;
@@ -2998,6 +3036,22 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
     int i;
     void *result;
     char **row;
+    monster_event_t *ev;
+
+    printf("got monster kill packet\n");
+
+    /* Ignore any packets that aren't version 1 or later. They're useless. */
+    if(pkt->hdr.version < 1)
+        return 0;
+
+    printf("didn't drop\n");
+
+    /* See if there's an event currently running, otherwise we can safely drop
+       any monster kill packets we get. */
+    if(!(ev = find_current_event(pkt->difficulty, pkt->version)))
+        return 0;
+
+    printf("got current event\n");
 
     /* Parse out the guildcard */
     gc = ntohl(pkt->guildcard);
@@ -3035,6 +3089,7 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
     /* If their account id in the table is NULL, then bail. No need to report an
        error for this. */
     if(!row[0]) {
+        printf("no account\n");
         sylverant_db_result_free(result);
         return 0;
     }
@@ -3043,9 +3098,39 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
     acc = atoi(row[0]);
     sylverant_db_result_free(result);
 
-    /* Ignore these for now for most people... :P */
-    if(acc != 1)
+    /* Are we recording all monsters, or just a few? */
+    if(ev->monster_count) {
+        printf("have monsters\n");
+        for(i = 0; i < ev->monster_count; ++i) {
+            printf("looking for monster %d\n", ev->monsters[i].monster);
+            if(ev->monsters[i].monster > 0x60)
+                continue;
+
+            ct = ntohl(pkt->counts[ev->monsters[i].monster]);
+            printf("got count of %d\n", (int)ct);
+
+            if(!ct || pkt->episode != ev->monsters[i].episode)
+                continue;
+
+            sprintf(query, "INSERT INTO monster_kills (account_id, guildcard, "
+                    "episode, difficulty, enemy, count) VALUES('%" PRIu32 "', "
+                    "'%" PRIu32 "', '%u', '%u', '%d', '%" PRIu32"') ON "
+                    "DUPLICATE KEY UPDATE count=count+VALUES(count)", acc, gc,
+                    (unsigned int)pkt->episode, (unsigned int)pkt->difficulty,
+                    i, ct);
+
+            /* Execute the query */
+            if(sylverant_db_query(&conn, query)) {
+                debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+                return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE,
+                                  ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+            }
+        }
+
         return 0;
+    }
+
+    printf("no monsters listed\n");
 
     /* Go through each entry... */
     for(i = 0; i < 0x60; ++i) {

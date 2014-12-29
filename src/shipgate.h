@@ -388,14 +388,17 @@ typedef struct shipgate_bb_opts {
     sylverant_bb_db_opts_t opts;
 } PACKED shipgate_bb_opts_pkt;
 
-/* Packet used to send an update to the user's monster kill counts. */
+/* Packet used to send an update to the user's monster kill counts.
+   Version 1 adds a client version code where there used to be a reserved byte
+   in the packet. */
 typedef struct shipgate_mkill {
     shipgate_hdr_t hdr;
     uint32_t guildcard;
     uint32_t block;
     uint8_t episode;
     uint8_t difficulty;
-    uint8_t reserved[2];
+    uint8_t version;
+    uint8_t reserved;
     uint32_t counts[0x60];
 } PACKED shipgate_mkill_pkt;
 
@@ -485,10 +488,25 @@ static const char shipgate_login_msg[] =
 #define USER_OPT_QUEST_LANG     0x00000001
 #define USER_OPT_ENABLE_BACKUP  0x00000002
 #define USER_OPT_GC_PROTECT     0x00000003
+#define USER_OPT_TRACK_KILLS    0x00000004
 
 /* Possible values for the fw_flags on a forwarded packet */
 #define FW_FLAG_PREFER_IPV6     0x00000001  /* Prefer IPv6 on reply */
 #define FW_FLAG_IS_PSOPC        0x00000002  /* Client is on PSOPC */
+
+/* Possible values for versions in packets that need them. This list should be
+   kept in-sync with those in clients.h from ship_server. */
+#define CLIENT_VERSION_DCV1     0
+#define CLIENT_VERSION_DCV2     1
+#define CLIENT_VERSION_PC       2
+#define CLIENT_VERSION_GC       3
+#define CLIENT_VERSION_EP3      4
+#define CLIENT_VERSION_BB       5
+
+/* Not a version, but potentially ORed with a version... */
+#define CLIENT_QUESTING         0x20
+#define CLIENT_CHALLENGE_MODE   0x40
+#define CLIENT_BATTLE_MODE      0x80
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
