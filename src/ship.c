@@ -3102,12 +3102,13 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
             if(!ct || pkt->episode != ev->monsters[i].episode)
                 continue;
 
-            sprintf(query, "INSERT INTO monster_kills (account_id, guildcard, "
-                    "episode, difficulty, enemy, count) VALUES('%" PRIu32 "', "
-                    "'%" PRIu32 "', '%u', '%u', '%d', '%" PRIu32"') ON "
-                    "DUPLICATE KEY UPDATE count=count+VALUES(count)", acc, gc,
+            sprintf(query, "INSERT INTO monster_kills (event_id, account_id, "
+                    " guildcard, episode, difficulty, enemy, count) VALUES('%"
+                    PRIu32 "', '%" PRIu32 "', '%" PRIu32 "', '%u', '%u', '%d', "
+                    "'%" PRIu32"') ON DUPLICATE KEY UPDATE "
+                    "count=count+VALUES(count)", ev->event_id, acc, gc,
                     (unsigned int)pkt->episode, (unsigned int)pkt->difficulty,
-                    i, ct);
+                    ev->monsters[i].monster, ct);
 
             /* Execute the query */
             if(sylverant_db_query(&conn, query)) {
@@ -3127,12 +3128,13 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
         if(!ct)
             continue;
 
-        sprintf(query, "INSERT INTO monster_kills (account_id, guildcard, "
-                "episode, difficulty, enemy, count) VALUES('%" PRIu32 "', "
-                "'%" PRIu32 "', '%u', '%u', '%d', '%" PRIu32"') ON DUPLICATE "
-                "KEY UPDATE count=count+VALUES(count)", acc, gc,
-                (unsigned int)pkt->episode, (unsigned int)pkt->difficulty, i,
-                ct);
+        sprintf(query, "INSERT INTO monster_kills (event_id, account_id, "
+                " guildcard, episode, difficulty, enemy, count) VALUES('%"
+                PRIu32 "', '%" PRIu32 "', '%" PRIu32 "', '%u', '%u', '%d', "
+                "'%" PRIu32"') ON DUPLICATE KEY UPDATE "
+                "count=count+VALUES(count)", ev->event_id, acc, gc,
+                (unsigned int)pkt->episode, (unsigned int)pkt->difficulty,
+                i, ct);
 
         /* Execute the query */
         if(sylverant_db_query(&conn, query)) {
