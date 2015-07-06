@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -3147,6 +3147,116 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
     return 0;
 }
 
+/* Handle a token-based user login request. */
+static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
+    uint32_t gc, block;
+    char query[256];
+    void *result;
+    char **row;
+    char esc[65], esc2[65];
+    uint16_t len;
+    uint8_t priv;
+    uint32_t account_id;
+
+    /* Clear old requests from the table. */
+    sprintf(query, "DELETE FROM login_tokens WHERE req_time + INTERVAL 10 "
+            "MINUTE < NOW()");
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't clear old tokens!\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* Check the sanity of the packet. Disconnect the ship if there's some odd
+       issue with the packet's sanity. */
+    len = ntohs(pkt->hdr.pkt_len);
+    if(len != sizeof(shipgate_gmlogin_req_pkt)) {
+        debug(DBG_WARN, "Ship %s sent invalid token Login!?\n", c->name);
+        return -1;
+    }
+
+    if(pkt->username[31] != '\0' || pkt->password[31] != '\0') {
+        debug(DBG_WARN, "Ship %s sent unterminated token Login\n", c->name);
+        return -1;
+    }
+
+    /* Escape the username and grab the data we need. */
+    sylverant_db_escape_str(&conn, esc, pkt->username, strlen(pkt->username));
+    sylverant_db_escape_str(&conn, esc2, pkt->password, strlen(pkt->password));
+    gc = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+
+    /* Build the query asking for the data. */
+    sprintf(query, "SELECT privlevel, account_id FROM account_data NATURAL "
+            "JOIN guildcards NATURAL JOIN login_tokens WHERE guildcard='%u' "
+            "AND username='%s' AND token='%s'",
+            gc, esc, esc2);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't lookup account data (user: %s, gc: %u)\n",
+              pkt->username, gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (user: %s, gc: %u)\n",
+              pkt->username, gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        sylverant_db_result_free(result);
+        debug(DBG_LOG, "Failed token login (user: %s, gc: %u)\n",
+              pkt->username, gc);
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
+                          ERR_GMLOGIN_NOT_GM, (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* Grab the privilege level out of the packet */
+    priv = (uint8_t)atoi(row[0]);
+    account_id = (uint32_t)strtoul(row[1], NULL, 0);
+
+    /* Filter out any privileges that don't make sense. Can't have global GM
+       without local GM support. Also, anyone set as a root this way must have
+       BOTH root bits set, not just one! */
+    if(((priv & CLIENT_PRIV_GLOBAL_GM) && !(priv & CLIENT_PRIV_LOCAL_GM)) ||
+       ((priv & CLIENT_PRIV_GLOBAL_ROOT) && !(priv & CLIENT_PRIV_LOCAL_ROOT)) ||
+       ((priv & CLIENT_PRIV_LOCAL_ROOT) && !(priv & CLIENT_PRIV_GLOBAL_ROOT))) {
+        debug(DBG_WARN, "Invalid privileges for user %u: %02x\n", pkt->username,
+              priv);
+        sylverant_db_result_free(result);
+
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* We're done if we got this far. */
+    sylverant_db_result_free(result);
+
+    /* Delete the request. */
+    sprintf(query, "DELETE FROM login_tokens WHERE account_id='%u'",
+            account_id);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't clear spent token!\n");
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+    }
+
+    /* Send a success message. */
+    return send_gmreply(c, gc, block, 1, priv);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -3243,6 +3353,9 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_MKILL:
             return handle_mkill(c, (shipgate_mkill_pkt *)pkt);
+
+        case SHDR_TYPE_TLOGIN:
+            return handle_tlogin(c, (shipgate_gmlogin_req_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);

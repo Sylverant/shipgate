@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -27,7 +27,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 10
-#define SHIPGATE_MAXIMUM_PROTO_VER 13
+#define SHIPGATE_MAXIMUM_PROTO_VER 14
 
 #ifdef PACKED
 #undef PACKED
@@ -424,7 +424,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_PING      0x0013      /* A Ping packet, enough said */
 #define SHDR_TYPE_CDATA     0x0014      /* Character data */
 #define SHDR_TYPE_CREQ      0x0015      /* Request saved character data */
-#define SHDR_TYPE_GMLOGIN   0x0016      /* Login request for a Global GM */
+#define SHDR_TYPE_GMLOGIN   0x0016      /* User login request */
 #define SHDR_TYPE_GCBAN     0x0017      /* Guildcard ban */
 #define SHDR_TYPE_IPBAN     0x0018      /* IP ban */
 #define SHDR_TYPE_BLKLOGIN  0x0019      /* User logs into a block */
@@ -444,6 +444,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_BBOPT_REQ 0x0027      /* Request Blue Burst options */
 #define SHDR_TYPE_CBKUP     0x0028      /* A character data backup packet */
 #define SHDR_TYPE_MKILL     0x0029      /* Monster kill update */
+#define SHDR_TYPE_TLOGIN    0x002A      /* Token-based login request */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
