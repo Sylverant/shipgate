@@ -111,7 +111,7 @@ typedef struct ship {
 
     gnutls_session_t session;
 
-    char name[12];
+    char name[13];
 } ship_t;
 
 TAILQ_HEAD(ship_queue, ship);

@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -2275,6 +2275,25 @@ skip_opts:
     }
 
     sylverant_db_result_free(result);
+
+    /* Set the flag to say that the user has been notified about any messages
+       that happen to have been mentioned above. There would be a potentially
+       race condition here between the select above and the update here, if we
+       were multithreaded. However, shipgate isn't multithreaded, and even if it
+       were, I don't think anyone will really care if the count up there is off
+       by that slight of an amount... */
+    sprintf(query, "UPDATE simple_mail INNER JOIN guildcards ON "
+            "simple_mail.recipient = guildcards.guildcard SET "
+            "simple_mail.status='2' WHERE guildcards.account_id='%" PRIu32
+            "' AND simple_mail.status='0'", gc2);
+
+    /* Do the update. */
+    if(sylverant_db_query(&conn, query)) {
+        /* Silently fail here (to the ship anyway), since this doesn't spell
+           doom for the logged in user */
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_mail;
+    }
 
 skip_mail:
     /* We're done (no need to tell the ship on success) */

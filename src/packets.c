@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -236,7 +236,7 @@ int send_ship_status(ship_t *c, ship_t *o, uint16_t status) {
     pkt->hdr.version = 0;
 
     /* Fill in the info */
-    strcpy((char *)pkt->name, o->name);
+    memcpy(pkt->name, o->name, 12);
     pkt->ship_id = htonl(o->key_idx);
     pkt->ship_addr4 = o->remote_addr;
     memcpy(pkt->ship_addr6, &o->remote_addr6, 16);
