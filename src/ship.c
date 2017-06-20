@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -2956,8 +2956,6 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
             realoptlen = 1;
             break;
 
-        case USER_OPT_VERSION_CODE:
-            /* The ship should never send this. */
         default:
             debug(DBG_WARN, "Ship sent unknown user option: %lu\n", opttype);
             return -5;
