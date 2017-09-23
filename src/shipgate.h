@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -27,7 +27,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 10
-#define SHIPGATE_MAXIMUM_PROTO_VER 14
+#define SHIPGATE_MAXIMUM_PROTO_VER 15
 
 #ifdef PACKED
 #undef PACKED
@@ -455,6 +455,8 @@ static const char shipgate_login_msg[] =
 #define LOGIN_FLAG_NOEP12   0x00000080  /* Do not allow PSO Ep1&2 clients */
 #define LOGIN_FLAG_NOEP3    0x00000100  /* Do not allow PSO Ep3 clients */
 #define LOGIN_FLAG_NOBB     0x00000200  /* Do not allow PSOBB clients */
+/* 0x00000400 - 0x00008000 reserved. */
+#define LOGIN_FLAG_PYTHON3  0x00010000  /* Ship supports Python 3.x scripting */
 
 /* General error codes */
 #define ERR_NO_ERROR            0x00000000
