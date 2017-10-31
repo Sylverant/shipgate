@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -3108,6 +3108,40 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
 
     /* We've verified they've got an account, continue on. */
     acc = atoi(row[0]);
+    sylverant_db_result_free(result);
+
+    /* Make sure they're not disqualified from the event... */
+    sprintf(query, "SELECT account_id FROM monster_event_disq WHERE "
+            "account_id='%" PRIu32 "' AND event_id='%" PRIu32 "'", acc,
+            ev->event_id);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 16);
+    }
+
+    /* Grab any data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't store disqualification (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        return send_error(c, SHDR_TYPE_MKILL, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 8);
+    }
+
+    /* If there's a result row, then they're disqualified... */
+    if((row = sylverant_db_result_fetch(result)) && row[0]) {
+        debug(DBG_LOG, "Rejecting monster kill update for disqualified player "
+              "%" PRIu32 " (gc %" PRIu32 ")\n", acc, gc);
+        sylverant_db_result_free(result);
+        return 0;
+    }
+
+    /* We don't actually care about the content of the row... If we get this
+       far, then we should be good to go... */
     sylverant_db_result_free(result);
 
     /* Are we recording all monsters, or just a few? */
