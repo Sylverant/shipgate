@@ -67,7 +67,7 @@ static int dont_daemonize = 0;
 /* Print information about this program to stdout. */
 static void print_program_info() {
     printf("Sylverant Shipgate version %s\n", VERSION);
-    printf("Copyright (C) 2009-2015 Lawrence Sebald\n\n");
+    printf("Copyright (C) 2009-2017 Lawrence Sebald\n\n");
     printf("This program is free software: you can redistribute it and/or\n"
            "modify it under the terms of the GNU Affero General Public\n"
            "License version 3 as published by the Free Software Foundation.\n\n"
