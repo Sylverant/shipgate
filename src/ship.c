@@ -120,7 +120,8 @@ static inline void parse_ipv6(uint64_t hi, uint64_t lo, uint8_t buf[16]) {
     buf[15] = (uint8_t)lo;
 }
 
-static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver) {
+static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver,
+                                           int any) {
     uint32_t i;
     uint8_t questing;
     time_t now;
@@ -138,12 +139,15 @@ static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver) {
         /* Skip all quests that don't meet the requirements passed in. */
         if(now > events[i].end_time || now < events[i].start_time)
             continue;
-        if(!(events[i].versions & (1 << ver)))
-            continue;
-        if(!(events[i].difficulties & (1 << difficulty)))
-            continue;
-        if(!events[i].allow_quests && questing)
-            continue;
+
+        if(!any) {
+            if(!(events[i].versions & (1 << ver)))
+                continue;
+            if(!(events[i].difficulties & (1 << difficulty)))
+                continue;
+            if(!events[i].allow_quests && questing)
+                continue;
+        }
 
         /* If we get here, then the event is valid, return it. */
         return events + i;
@@ -2099,6 +2103,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     size_t in, out;
     ICONV_CONST char *inptr;
     char *outptr;
+    monster_event_t *ev;
 
     /* Is the name a Blue Burst-style (UTF-16) name or not? */
     if(pkt->ch_name[0] == '\t') {
@@ -2296,6 +2301,57 @@ skip_opts:
     }
 
 skip_mail:
+    /* If there's an event ongoing, make sure the user isn't disqualified (or
+       has already been nofified of their disqualification).
+       TODO: Figure out a better way of searching, since this limits us to one
+             ongoing event at a time... */
+    if(!(ev = find_current_event(0, 0, 1)))
+        return 0;
+
+    /* See if they're disqualified (and haven't been notified). */
+    sprintf(query, "SELECT account_id FROM monster_event_disq WHERE "
+            "account_id='%" PRIu32 "' AND event_id='%" PRIu32 "' AND flags='0'",
+            gc2, ev->event_id);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        /* Meh. */
+        return 0;
+    }
+
+    /* Grab any data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't store disqualification (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+        /* Meh. */
+        return 0;
+    }
+
+    /* If there's a result row, then they're disqualified... */
+    if((row = sylverant_db_result_fetch(result)) && row[0]) {
+        send_simple_mail(c, gc, bl, 2, "Sys.Message", "You have been "
+                         "disqualified from the current event for violating "
+                         "the rules of the event.");
+
+        sprintf(query, "UPDATE monster_event_disq SET flags='1' WHERE "
+                "event_id='%" PRIu32 "' AND account_id='%" PRIu32 "'",
+                ev->event_id, gc2);
+
+        /* Do the update. */
+        if(sylverant_db_query(&conn, query)) {
+            /* Silently fail here (to the ship anyway), since this doesn't spell
+               doom for the logged in user */
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        }
+    }
+
+    /* We don't actually care about the content of the row... If we get this
+       far, then we should be good to go... */
+    sylverant_db_result_free(result);
+
     /* We're done (no need to tell the ship on success) */
     return 0;
 }
@@ -3063,7 +3119,7 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
 
     /* See if there's an event currently running, otherwise we can safely drop
        any monster kill packets we get. */
-    if(!(ev = find_current_event(pkt->difficulty, pkt->version)))
+    if(!(ev = find_current_event(pkt->difficulty, pkt->version, 0)))
         return 0;
 
     /* Parse out the guildcard */
