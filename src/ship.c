@@ -1,6 +1,7 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017,
+                  2018 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -3003,6 +3004,7 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
         case USER_OPT_ENABLE_BACKUP:
         case USER_OPT_GC_PROTECT:
         case USER_OPT_TRACK_KILLS:
+        case USER_OPT_LEGIT_ALWAYS:
             /* The full option should be 16 bytes */
             if(optlen != 16) {
                 return -4;
