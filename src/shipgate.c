@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2018 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -23,6 +23,9 @@
 #include <time.h>
 #include <pthread.h>
 #include <iconv.h>
+#include <pwd.h>
+#include <grp.h>
+#include <signal.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -33,8 +36,28 @@
 #include <sylverant/debug.h>
 #include <sylverant/database.h>
 
+#if HAVE_LIBUTIL_H == 1
+#include <libutil.h>
+#elif HAVE_BSD_LIBUTIL_H == 1
+#include <bsd/libutil.h>
+#else
+/* From pidfile.c */
+struct pidfh;
+struct pidfh *pidfile_open(const char *path, mode_t mode, pid_t *pidptr);
+int pidfile_write(struct pidfh *pfh);
+int pidfile_remove(struct pidfh *pfh);
+#endif
+
 #include "shipgate.h"
 #include "ship.h"
+
+#ifndef PID_DIR
+#define PID_DIR "/var/run"
+#endif
+
+#ifndef RUNAS_DEFAULT
+#define RUNAS_DEFAULT "sylverant"
+#endif
 
 /* Storage for our list of ships. */
 struct ship_queue ships = TAILQ_HEAD_INITIALIZER(ships);
@@ -54,7 +77,7 @@ gnutls_certificate_credentials_t tls_cred;
 gnutls_priority_t tls_prio;
 static gnutls_dh_params_t dh_params;
 
-int shutting_down = 0;
+static volatile sig_atomic_t shutting_down = 0;
 
 /* Events... */
 uint32_t event_count;
@@ -63,6 +86,9 @@ monster_event_t *events;
 static const char *config_file = NULL;
 static const char *custom_dir = NULL;
 static int dont_daemonize = 0;
+static const char *pidfile_name = NULL;
+static struct pidfh *pf = NULL;
+static const char *runas_user = RUNAS_DEFAULT;
 
 /* Print information about this program to stdout. */
 static void print_program_info() {
@@ -92,9 +118,13 @@ static void print_help(const char *bin) {
            "                default one.\n"
            "-D directory    Use the specified directory as the root\n"
            "--nodaemon      Don't daemonize\n"
+           "-P filename     Use the specified name for the pid file to write\n"
+           "                instead of the default.\n"
+           "-U username     Run as the specified user instead of '%s'\n"
            "--help          Print this help and exit\n\n"
            "Note that if more than one verbosity level is specified, the last\n"
-           "one specified will be used. The default is --verbose.\n", bin);
+           "one specified will be used. The default is --verbose.\n", bin,
+           RUNAS_DEFAULT);
 }
 
 /* Parse any command-line arguments passed in. */
@@ -116,15 +146,45 @@ static void parse_command_line(int argc, char *argv[]) {
             debug_set_threshold(DBG_ERROR);
         }
         else if(!strcmp(argv[i], "-C")) {
+            if(i == argc - 1) {
+                printf("-C requires an argument!\n\n");
+                print_help(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+
             /* Save the config file's name. */
             config_file = argv[++i];
         }
         else if(!strcmp(argv[i], "-D")) {
+            if(i == argc - 1) {
+                printf("-D requires an argument!\n\n");
+                print_help(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+
             /* Save the custom dir */
             custom_dir = argv[++i];
         }
         else if(!strcmp(argv[i], "--nodaemon")) {
             dont_daemonize = 1;
+        }
+        else if(!strcmp(argv[i], "-P")) {
+            if(i == argc - 1) {
+                printf("-P requires an argument!\n\n");
+                print_help(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+
+            pidfile_name = argv[++i];
+        }
+        else if(!strcmp(argv[i], "-U")) {
+            if(i == argc - 1) {
+                printf("-U requires an argument!\n\n");
+                print_help(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+
+            runas_user = argv[++i];
         }
         else if(!strcmp(argv[i], "--help")) {
             print_help(argv[0]);
@@ -400,6 +460,7 @@ void run_server(int tsock, int tsock6) {
         now = time(NULL);
 
         if(shutting_down) {
+            debug(DBG_LOG, "Got shutdown signal\n");
             return;
         }
 
@@ -576,6 +637,22 @@ static void open_log() {
     debug_set_file(dbgfp);
 }
 
+static void reopen_log(void) {
+    FILE *dbgfp;
+
+    dbgfp = fopen("logs/shipgate_debug.log", "a");
+
+    if(!dbgfp) {
+        debug(DBG_ERROR, "Cannot open log file\n");
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Swap out the file pointers and close the old one. */
+    dbgfp = debug_set_file(dbgfp);
+    fclose(dbgfp);
+}
+
 static int open_sock(int family, uint16_t port) {
     int sock, val;
     struct sockaddr_in addr;
@@ -653,10 +730,155 @@ static int open_sock(int family, uint16_t port) {
     return sock;
 }
 
+static void sighup_hnd(int signum, siginfo_t *inf, void *ptr) {
+    (void)signum;
+    (void)inf;
+    (void)ptr;
+    reopen_log();
+}
+
+static void sigterm_hnd(int signum, siginfo_t *inf, void *ptr) {
+    (void)signum;
+    (void)inf;
+    (void)ptr;
+
+    shutting_down = 1;
+}
+
+static void sigusr1_hnd(int signum, siginfo_t *inf, void *ptr) {
+    (void)signum;
+    (void)inf;
+    (void)ptr;
+
+    shutting_down = 2;
+}
+
+/* Install any handlers for signals we care about */
+static void install_signal_handlers() {
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(struct sigaction));
+    sigemptyset(&sa.sa_mask);
+
+    /* Ignore SIGPIPEs */
+    sa.sa_handler = SIG_IGN;
+
+    if(sigaction(SIGPIPE, &sa, NULL) == -1) {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Set up a SIGHUP handler to reopen the log file, if we do log rotation. */
+    if(!dont_daemonize) {
+        sigemptyset(&sa.sa_mask);
+        sa.sa_handler = NULL;
+        sa.sa_sigaction = &sighup_hnd;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+
+        if(sigaction(SIGHUP, &sa, NULL) < 0) {
+            perror("sigaction");
+            fprintf(stderr, "Can't set SIGHUP handler, log rotation may not"
+                    "work.\n");
+        }
+    }
+
+    /* Set up a SIGTERM handler to somewhat gracefully shutdown. */
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = NULL;
+    sa.sa_sigaction = &sigterm_hnd;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+
+    if(sigaction(SIGTERM, &sa, NULL) < 0) {
+        perror("sigaction");
+        fprintf(stderr, "Can't set SIGTERM handler.\n");
+    }
+
+    /* Set up a SIGUSR1 handler to restart... */
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = NULL;
+    sa.sa_sigaction = &sigusr1_hnd;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+
+    if(sigaction(SIGUSR1, &sa, NULL) < 0) {
+        perror("sigaction");
+        fprintf(stderr, "Can't set SIGUSR1 handler.\n");
+    }
+}
+
+static int drop_privs(void) {
+    struct passwd *pw;
+    uid_t uid;
+    gid_t gid;
+    int gid_count = 0;
+    gid_t *groups;
+
+    /* Make sure we're actually root, otherwise some of this will fail. */
+    if(getuid() && geteuid())
+        return 0;
+
+    /* Look for users. We're looking for the user "sylverant", generally. */
+    if((pw = getpwnam(runas_user))) {
+        uid = pw->pw_uid;
+        gid = pw->pw_gid;
+    }
+    else {
+        debug(DBG_ERROR, "Cannot find user \"%s\". Bailing out!\n", runas_user);
+        return -1;
+    }
+
+#ifdef HAVE_GETGROUPLIST
+    /* Figure out what other groups the user is in... */
+    getgrouplist(runas_user, gid, NULL, &gid_count);
+    if(!(groups = malloc(gid_count * sizeof(gid_t)))) {
+        perror("malloc");
+        return -1;
+    }
+
+    if(getgrouplist(runas_user, gid, groups, &gid_count)) {
+        perror("getgrouplist");
+        free(groups);
+        return -1;
+    }
+
+    if(setgroups(gid_count, groups)) {
+        perror("setgroups");
+        free(groups);
+        return -1;
+    }
+
+    /* We're done with most of these, so clear this out now... */
+    free(groups);
+#else
+    if(setgroups(1, &gid)) {
+        perror("setgroups");
+        return -1;
+    }
+#endif
+
+    if(setgid(gid)) {
+        perror("setgid");
+        return -1;
+    }
+
+    if(setuid(uid)) {
+        perror("setuid");
+        return -1;
+    }
+
+    /* Make sure the privileges stick. */
+    if(!getuid() || !geteuid()) {
+        debug(DBG_ERROR, "Cannot set non-root privileges. Bailing out!\n");
+        return -1;
+    }
+
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     int tsock = -1, tsock6 = -1;
     char *initial_path;
     long size;
+    pid_t op;
 
     /* Parse the command line and read our configuration. */
     parse_command_line(argc, argv);
@@ -681,14 +903,46 @@ int main(int argc, char *argv[]) {
 
     /* If we're still alive and we're supposed to daemonize, do it now. */
     if(!dont_daemonize) {
-        open_log();
+        /* Attempt to open and lock the pid file. */
+        if(!pidfile_name) {
+            char *pn = (char *)malloc(strlen(PID_DIR) + 32);
+            sprintf(pn, "%s/shipgate.pid", PID_DIR);
+            pidfile_name = pn;
+        }
+
+        pf = pidfile_open(pidfile_name, 0660, &op);
+
+        if(!pf) {
+            if(errno == EEXIST) {
+                debug(DBG_ERROR, "Shipgate already running? (pid: %ld)\n",
+                      (long)op);
+                exit(EXIT_FAILURE);
+            }
+
+            debug(DBG_WARN, "Cannot create pidfile: %s!\n", strerror(errno));
+        }
 
         if(daemon(1, 0)) {
             debug(DBG_ERROR, "Cannot daemonize\n");
             perror("daemon");
             exit(EXIT_FAILURE);
         }
+
+        if(drop_privs())
+            exit(EXIT_FAILURE);
+
+        open_log();
+
+        /* Write the pid file. */
+        pidfile_write(pf);
     }
+    else {
+        if(drop_privs())
+            exit(EXIT_FAILURE);
+    }
+
+restart:
+    shutting_down = 0;
 
     /* Initialize GnuTLS */
     init_gnutls();
@@ -697,26 +951,33 @@ int main(int argc, char *argv[]) {
     ic_utf8_to_utf16 = iconv_open("UTF-16LE", "UTF-8");
     if(ic_utf8_to_utf16 == (iconv_t)-1) {
         debug(DBG_ERROR, "Cannot create iconv context (UTF-8 to UTF-16)\n");
+        pidfile_remove(pf);
         exit(EXIT_FAILURE);
     }
 
     ic_utf16_to_utf8 = iconv_open("UTF-8", "UTF-16LE");
     if(ic_utf16_to_utf8 == (iconv_t)-1) {
         debug(DBG_ERROR, "Cannot create iconv context (UTF-16 to UTF-8)\n");
+        pidfile_remove(pf);
         exit(EXIT_FAILURE);
     }
 
     ic_sjis_to_utf8 = iconv_open("UTF-8", "SHIFT_JIS");
     if(ic_sjis_to_utf8 == (iconv_t)-1) {
         debug(DBG_ERROR, "Cannot create iconv context (Shift-JIS to UTF-8)\n");
+        pidfile_remove(pf);
         exit(EXIT_FAILURE);
     }
 
     ic_8859_to_utf8 = iconv_open("UTF-8", "ISO-8859-1");
     if(ic_8859_to_utf8 == (iconv_t)-1) {
         debug(DBG_ERROR, "Cannot create iconv context (ISO-8859-1 to UTF-8)\n");
+        pidfile_remove(pf);
         exit(EXIT_FAILURE);
     }
+
+    /* Install signal handlers */
+    install_signal_handlers();
 
     /* Create the socket and listen for TLS connections. */
     tsock = open_sock(AF_INET, cfg->shipgate_port);
@@ -724,6 +985,7 @@ int main(int argc, char *argv[]) {
 
     if(tsock == -1 && tsock6 == -1) {
         debug(DBG_ERROR, "Couldn't create IPv4 or IPv6 TLS socket!\n");
+        pidfile_remove(pf);
         exit(EXIT_FAILURE);
     }
 
@@ -745,15 +1007,12 @@ int main(int argc, char *argv[]) {
 
     /* Restart if we're supposed to be doing so. */
     if(shutting_down == 2) {
-        chdir(initial_path);
-        free(initial_path);
-        execvp(argv[0], argv);
-
-        /* This should never be reached, since execvp should replace us. If we
-           get here, there was a serious problem... */
-        debug(DBG_ERROR, "Restart failed: %s\n", strerror(errno));
-        return -1;
+        load_config();
+        goto restart;
     }
+
+    free(initial_path);
+    pidfile_remove(pf);
 
     return 0;
 }
