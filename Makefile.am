@@ -1,8 +1,8 @@
-#  
+#
 #   This file is part of Sylverant PSO Server.
-#  
-#   Copyright (C) 2009, 2014 Lawrence Sebald
-#  
+#
+#   Copyright (C) 2009, 2014, 2018 Lawrence Sebald
+#
 #   This program is free software: you can redistribute it and/or modify
 #   it under the terms of the GNU Affero General Public License version 3
 #   as published by the Free Software Foundation.
@@ -22,5 +22,10 @@ LIBS += $(MYSQL_LIBS) $(LIBICONV)
 bin_PROGRAMS = shipgate
 shipgate_SOURCES = src/packets.c src/ship.c src/ship.h src/ship_packets.h \
                    src/shipgate.c src/shipgate.h
+
+if NEED_PIDFILE
+AM_CFLAGS = -DNEED_PIDFILE=1
+shipgate_SOURCES += src/pidfile.c
+endif
 
 datarootdir = @datarootdir@
