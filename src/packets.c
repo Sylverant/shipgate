@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014, 2016 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2016, 2018 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -20,6 +20,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+
+#include <sylverant/debug.h>
+#include <sylverant/checksum.h>
 
 #include "shipgate.h"
 #include "ship.h"
@@ -566,4 +569,72 @@ int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
     strncpy(pkt.stuff, msg, 0x90);
 
     return forward_dreamcast(c, (dc_pkt_hdr_t *)&pkt, c->key_idx, gc, block);
+}
+
+/* Send a chunk of scripting code to a ship. */
+int send_script_chunk(ship_t *c, const char *local_fn, const char *remote_fn,
+                      uint8_t type, uint32_t file_len, uint32_t crc) {
+    shipgate_schunk_pkt *pkt = (shipgate_schunk_pkt *)sendbuf;
+    FILE *fp;
+
+    /* Don't try to send these to a ship that won't know what to do with them */
+    if(c->proto_ver < 16 || !(c->flags & LOGIN_FLAG_LUA))
+        return 0;
+
+    /* Make sure it isn't too large... */
+    if(file_len > 32768) {
+        debug(DBG_ERROR, "Attempt to send a script that is too large %s\n",
+              local_fn);
+        return -1;
+    }
+
+    /* Open up the file. */
+    if(!(fp = fopen(local_fn, "rb"))) {
+        debug(DBG_ERROR, "Cannot open script file %s\n", local_fn);
+        return -1;
+    }
+
+    /* Fill in the header and such */
+    memset(pkt, 0, sizeof(shipgate_schunk_pkt));
+    pkt->hdr.pkt_len = htons(file_len + sizeof(shipgate_schunk_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SCHUNK);
+    pkt->chunk_type = type;
+    pkt->chunk_length = htonl((uint32_t)file_len);
+    pkt->chunk_crc = htonl(crc);
+    strncpy(pkt->filename, remote_fn, 32);
+
+    /* Copy in the chunk */
+    if(fread(pkt->chunk, 1, file_len, fp) != file_len) {
+        fclose(fp);
+        debug(DBG_ERROR, "Error reading from script file %s\n", local_fn);
+        return -1;
+    }
+
+    fclose(fp);
+
+    /* Send it away */
+    return send_crypt(c, file_len + sizeof(shipgate_schunk_pkt));
+}
+
+/* Send a packet to check if a particular script is in its current form on a
+   ship. */
+int send_script_check(ship_t *c, const char *remote_fn, uint8_t type,
+                      uint32_t crc, uint32_t file_len) {
+    shipgate_schunk_pkt *pkt = (shipgate_schunk_pkt *)sendbuf;
+
+    /* Don't try to send these to a ship that won't know what to do with them */
+    if(c->proto_ver < 16 || !(c->flags & LOGIN_FLAG_LUA))
+        return 0;
+
+    /* Fill in the easy stuff */
+    memset(pkt, 0, sizeof(shipgate_schunk_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_schunk_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SCHUNK);
+    pkt->chunk_type = type | SCHUNK_CHECK;
+    pkt->chunk_length = file_len;
+    strncpy(pkt->filename, remote_fn, 32);
+    pkt->chunk_crc = htons(crc);
+
+    /* Send it away */
+    return send_crypt(c, sizeof(shipgate_schunk_pkt));
 }

@@ -27,7 +27,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 10
-#define SHIPGATE_MAXIMUM_PROTO_VER 15
+#define SHIPGATE_MAXIMUM_PROTO_VER 16
 
 #ifdef PACKED
 #undef PACKED
@@ -402,6 +402,28 @@ typedef struct shipgate_mkill {
     uint32_t counts[0x60];
 } PACKED shipgate_mkill_pkt;
 
+/* Packet used to send a script chunk to a ship. */
+typedef struct shipgate_schunk {
+    shipgate_hdr_t hdr;
+    uint8_t chunk_type;
+    uint8_t reserved[3];
+    uint32_t chunk_length;
+    uint32_t chunk_crc;
+    uint32_t reserved2;
+    char filename[32];
+    uint8_t chunk[];
+} PACKED shipgate_schunk_pkt;
+
+/* Packet used to communicate with a script running on the shipgate during a
+   scripted event. */
+typedef struct shipgate_sdata {
+    shipgate_hdr_t hdr;
+    uint32_t event_id;
+    uint32_t data_len;
+    uint32_t reserved[2];
+    uint8_t data[];
+} PACKED shipgate_sdata_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -445,6 +467,8 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_CBKUP     0x0028      /* A character data backup packet */
 #define SHDR_TYPE_MKILL     0x0029      /* Monster kill update */
 #define SHDR_TYPE_TLOGIN    0x002A      /* Token-based login request */
+#define SHDR_TYPE_SCHUNK    0x002B      /* Script chunk */
+#define SHDR_TYPE_SDATA     0x002C      /* Script data */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -511,6 +535,11 @@ static const char shipgate_login_msg[] =
 #define CLIENT_QUESTING         0x20
 #define CLIENT_CHALLENGE_MODE   0x40
 #define CLIENT_BATTLE_MODE      0x80
+
+/* Types for the script chunk packet. */
+#define SCHUNK_TYPE_SCRIPT      0x01
+#define SCHUNK_TYPE_MODULE      0x02
+#define SCHUNK_CHECK            0x80
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
