@@ -428,7 +428,12 @@ typedef struct shipgate_sdata {
     shipgate_hdr_t hdr;
     uint32_t event_id;
     uint32_t data_len;
-    uint32_t reserved[2];
+    uint32_t guildcard;
+    uint32_t block;
+    uint8_t episode;
+    uint8_t difficulty;
+    uint8_t version;
+    uint8_t reserved;
     uint8_t data[];
 } PACKED shipgate_sdata_pkt;
 
@@ -622,5 +627,11 @@ int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
 /* Send a system-generated simple mail message. */
 int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
                      const char *name, const char *msg);
+
+/* Send a script check packet. */
+int send_script_check(ship_t *c, ship_script_t *scr);
+
+/* Send a script to a ship. */
+int send_script(ship_t *c, ship_script_t *scr);
 
 #endif /* !SHIPGATE_H */

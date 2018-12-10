@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2011 Lawrence Sebald
+    Copyright (C) 2009, 2011, 2018 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -68,6 +68,14 @@ typedef struct monster_event {
     uint32_t monster_count;
     event_monster_t *monsters;
 } monster_event_t;
+
+typedef struct ship_script {
+    char *local_fn;
+    char *remote_fn;
+    uint32_t len;
+    uint32_t crc;
+    int module;
+} PACKED ship_script;
 
 #undef PACKED
 

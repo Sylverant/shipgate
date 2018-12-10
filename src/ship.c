@@ -67,6 +67,10 @@ extern gnutls_priority_t tls_prio;
 extern uint32_t event_count;
 extern monster_event_t *events;
 
+/* Scripts */
+extern uint32_t script_count;
+extern ship_script_t *scripts;
+
 static uint8_t recvbuf[65536];
 
 /* Find a ship by its id */
@@ -152,6 +156,19 @@ static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver,
 
         /* If we get here, then the event is valid, return it. */
         return events + i;
+    }
+
+    return NULL;
+}
+
+static ship_script_t *find_script(const char *fn, int module) {
+    uint32_t i;
+
+    /* Go through the list looking for a match. */
+    for(i = 0; i < script_count; ++i) {
+        if(scripts[i].module == module &&
+           !strcmp(scripts[i].remote_fn, fn))
+            return scripts + i;
     }
 
     return NULL;
@@ -3368,6 +3385,29 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     return send_gmreply(c, gc, block, 1, priv);
 }
 
+static int handle_schunk(ship_t *s, shipgate_schunk_err_pkt *pkt) {
+    ship_script_t *scr;
+    int module;
+
+    /* Make sure it looks sane... */
+    if(pkt->filename[31] || type > SCHUNK_TYPE_MODULE)
+        return -1;
+
+    if(ntohl(pkt->base.error_code) != ERR_SCHUNK_NEED_SCRIPT)
+        return -1;
+
+    module = pkt->type == SCHUNK_TYPE_MODULE;
+
+    /* Find the script requested. */
+    if(!(scr = find_script(pkt->filename, module))) {
+        debug(DBG_WARN, "Ship requesting unknown script '%s'\n",
+              pkt->filename);
+        return -1;
+    }
+
+    return send_script(s, scr);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -3467,6 +3507,19 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_TLOGIN:
             return handle_tlogin(c, (shipgate_gmlogin_req_pkt *)pkt);
+
+        case SHDR_TYPE_SCHUNK:
+            /* Sanity check... */
+            if(!(flags & SHDR_RESPONSE)) {
+                debug(DBG_WARN, "Client sent script chunk?\n");
+                return -1;
+            }
+
+            /* If it's a success response, don't bother doing anything */
+            if(!(flags & SHDR_FAILURE))
+                return 0;
+
+            return handle_schunk(c, (shipgate_schunk_err_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);
