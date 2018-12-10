@@ -66,6 +66,24 @@ MYSQL_LIBS="`mysql_config --libs`"
 AC_SUBST(MYSQL_LIBS)
 AM_CONDITIONAL([NEED_PIDFILE], [test "$NEED_PIDFILE" -eq 1])
 
+AC_ARG_ENABLE([scripting], [AS_HELP_STRING([--enable-scripting],
+              [enable scripting support in the binary (requires Lua 5.3.x)])],
+              [enable_scripting=$enableval],
+              [enable_scripting=no])
+
+AS_IF([test "x$enable_scripting" != xno], [
+    PKG_CHECK_MODULES([lua], [lua-5.3], , [
+        PKG_CHECK_MODULES([lua], [lua5.3], , [
+            PKG_CHECK_MODULES([lua], [lua >= 5.3], , [
+                AC_MSG_ERROR([Scripting support requires Lua 5.3.x!])
+            ])
+        ])
+    ])
+
+    CFLAGS="$CFLAGS $lua_CFLAGS -DENABLE_LUA"
+    LIBS="$LIBS $lua_LIBS"
+])
+
 # Checks for header files.
 AC_CHECK_HEADERS([arpa/inet.h inttypes.h netinet/in.h stdlib.h string.h sys/socket.h unistd.h pwd.h grp.h])
 AC_CHECK_HEADERS([libutil.h bsd/libutil.h])
