@@ -631,9 +631,9 @@ int send_script_check(ship_t *c, ship_script_t *scr) {
     pkt->hdr.pkt_len = htons(sizeof(shipgate_schunk_pkt));
     pkt->hdr.pkt_type = htons(SHDR_TYPE_SCHUNK);
     pkt->chunk_type = SCHUNK_CHECK | type;
-    pkt->chunk_length = htons(scr->len);
+    pkt->chunk_length = htonl(scr->len);
     strncpy(pkt->filename, scr->remote_fn, 32);
-    pkt->chunk_crc = htons(scr->crc);
+    pkt->chunk_crc = htonl(scr->crc);
 
     /* Send it away */
     return send_crypt(c, sizeof(shipgate_schunk_pkt));
@@ -643,19 +643,27 @@ int send_script_check(ship_t *c, ship_script_t *scr) {
 int send_script(ship_t *c, ship_script_t *scr) {
     shipgate_schunk_pkt *pkt = (shipgate_schunk_pkt *)sendbuf;
     FILE *fp;
+    uint16_t pkt_len;
 
     /* Don't try to send these to a ship that won't know what to do with them */
     if(c->proto_ver < 16 || !(c->flags & LOGIN_FLAG_LUA))
         return 0;
 
+    debug(DBG_LOG, "Sending ship %s script file '%s' (%s)\n", c->name,
+          scr->remote_fn, scr->local_fn);
+
+    pkt_len = sizeof(shipgate_schunk_pkt) + scr->len;
+    if(pkt_len & 0x07)
+        pkt_len = (pkt_len + 8) & 0xFFF8;
+
     /* Fill in the easy stuff */
-    memset(pkt, 0, sizeof(shipgate_schunk_pkt));
-    pkt->hdr.pkt_len = htons(sizeof(shipgate_schunk_pkt) + scr->len);
+    memset(pkt, 0, pkt_len);
+    pkt->hdr.pkt_len = htons(pkt_len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_SCHUNK);
     pkt->chunk_type = scr->module ? SCHUNK_TYPE_MODULE : SCHUNK_TYPE_SCRIPT;
-    pkt->chunk_length = htons(scr->len);
+    pkt->chunk_length = htonl(scr->len);
     strncpy(pkt->filename, scr->remote_fn, 32);
-    pkt->chunk_crc = htons(scr->crc);
+    pkt->chunk_crc = htonl(scr->crc);
 
     /* Read the script file in... */
     if(!(fp = fopen(scr->local_fn, "rb"))) {
@@ -671,5 +679,5 @@ int send_script(ship_t *c, ship_script_t *scr) {
     fclose(fp);
 
     /* Send it away */
-    return send_crypt(c, sizeof(shipgate_schunk_pkt) + scr->len);
+    return send_crypt(c, pkt_len);
 }
