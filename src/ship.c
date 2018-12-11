@@ -3418,8 +3418,25 @@ static int handle_schunk(ship_t *s, shipgate_schunk_err_pkt *pkt) {
 }
 
 static int handle_sdata(ship_t *s, shipgate_sdata_pkt *pkt) {
-    /* XXXX */
-    return 0;
+    uint32_t event_id, data_len, guildcard, block;
+
+    /* Parse data out of the packet */
+    event_id = ntohl(pkt->event_id);
+    data_len = ntohl(pkt->data_len);
+    guildcard = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+
+    if(ntohs(pkt->hdr.pkt_len) < sizeof(shipgate_sdata_pkt) + data_len) {
+        debug(DBG_WARN, "Ship sent sdata with bad length\n");
+        return -1;
+    }
+
+    return script_execute(ScriptActionSData, SCRIPT_ARG_UINT32, s->key_idx,
+                          SCRIPT_ARG_UINT32, block, SCRIPT_ARG_UINT32, event_id,
+                          SCRIPT_ARG_UINT32, guildcard, SCRIPT_ARG_UINT8,
+                          pkt->episode, SCRIPT_ARG_UINT8, pkt->difficulty,
+                          SCRIPT_ARG_UINT8, pkt->version, SCRIPT_ARG_STRING,
+                          (size_t)data_len, pkt->data, SCRIPT_ARG_END);
 }
 
 /* Process one ship packet. */
