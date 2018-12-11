@@ -394,7 +394,7 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     uint16_t menu_code = ntohs(pkt->menu_code);
     int ship_number;
     uint64_t ip6_hi, ip6_lo;
-    uint32_t clients = 0;
+    uint32_t clients = 0, i;
 
     /* Check the protocol version for support (TLS first supported in v10) */
     if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
@@ -480,6 +480,15 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     if(send_error(c, SHDR_TYPE_LOGIN6, SHDR_RESPONSE, ERR_NO_ERROR, NULL, 0)) {
         return -1;
     }
+
+#ifdef ENABLE_LUA
+    /* Send script check packets, if the ship supports scripting */
+    if(pver >= 16 && c->flags & LOGIN_FLAG_LUA) {
+        for(i = 0; i < script_count; ++i) {
+            send_script_check(c, &scripts[i]);
+        }
+    }
+#endif
 
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
@@ -2329,7 +2338,7 @@ skip_mail:
     /* See if they're disqualified (and haven't been notified). */
     sprintf(query, "SELECT account_id FROM monster_event_disq WHERE "
             "account_id='%" PRIu32 "' AND event_id='%" PRIu32 "' AND flags='0'",
-            gc2, ev->event_id);
+            gc, ev->event_id);
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", gc);
@@ -2356,7 +2365,7 @@ skip_mail:
 
         sprintf(query, "UPDATE monster_event_disq SET flags='1' WHERE "
                 "event_id='%" PRIu32 "' AND account_id='%" PRIu32 "'",
-                ev->event_id, gc2);
+                ev->event_id, gc);
 
         /* Do the update. */
         if(sylverant_db_query(&conn, query)) {
