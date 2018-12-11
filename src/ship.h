@@ -69,14 +69,6 @@ typedef struct monster_event {
     event_monster_t *monsters;
 } monster_event_t;
 
-typedef struct ship_script {
-    char *local_fn;
-    char *remote_fn;
-    uint32_t len;
-    uint32_t crc;
-    int module;
-} PACKED ship_script;
-
 #undef PACKED
 
 typedef struct ship {

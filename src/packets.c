@@ -663,7 +663,7 @@ int send_script(ship_t *c, ship_script_t *scr) {
         return 0;
     }
 
-    if(fread(scr->chunk, 1, scr->len, fp) != scr->len) {
+    if(fread(pkt->chunk, 1, scr->len, fp) != scr->len) {
         debug(DBG_ERROR, "Script file '%s' changed lengths?\n", scr->local_fn);
         return 0;
     }

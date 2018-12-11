@@ -3390,7 +3390,7 @@ static int handle_schunk(ship_t *s, shipgate_schunk_err_pkt *pkt) {
     int module;
 
     /* Make sure it looks sane... */
-    if(pkt->filename[31] || type > SCHUNK_TYPE_MODULE)
+    if(pkt->filename[31] || pkt->type > SCHUNK_TYPE_MODULE)
         return -1;
 
     if(ntohl(pkt->base.error_code) != ERR_SCHUNK_NEED_SCRIPT)
@@ -3406,6 +3406,11 @@ static int handle_schunk(ship_t *s, shipgate_schunk_err_pkt *pkt) {
     }
 
     return send_script(s, scr);
+}
+
+static int handle_sdata(ship_t *s, shipgate_sdata_pkt *pkt) {
+    /* XXXX */
+    return 0;
 }
 
 /* Process one ship packet. */
@@ -3520,6 +3525,9 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
                 return 0;
 
             return handle_schunk(c, (shipgate_schunk_err_pkt *)pkt);
+
+        case SHDR_TYPE_SDATA:
+            return handle_sdata(c, (shipgate_sdata_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);

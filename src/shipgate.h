@@ -24,6 +24,7 @@
 
 #include "ship.h"
 #include "packets.h"
+#include "scripts.h"
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 10

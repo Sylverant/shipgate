@@ -21,7 +21,7 @@ LIBS += $(MYSQL_LIBS) $(LIBICONV)
 
 bin_PROGRAMS = shipgate
 shipgate_SOURCES = src/packets.c src/ship.c src/ship.h src/ship_packets.h \
-                   src/shipgate.c src/shipgate.h
+                   src/shipgate.c src/shipgate.h src/scripts.c src/scripts.h
 
 if NEED_PIDFILE
 AM_CFLAGS = -DNEED_PIDFILE=1

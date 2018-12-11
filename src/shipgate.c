@@ -50,6 +50,7 @@ int pidfile_remove(struct pidfh *pfh);
 
 #include "shipgate.h"
 #include "ship.h"
+#include "scripts.h"
 
 #ifndef PID_DIR
 #define PID_DIR "/var/run"
@@ -997,6 +998,8 @@ restart:
         exit(EXIT_FAILURE);
     }
 
+    init_scripts();
+
     /* Clean up the DB now that we've done everything else that might fail... */
     open_db();
 
@@ -1006,6 +1009,7 @@ restart:
     /* Clean up. */
     close(tsock);
     close(tsock6);
+    cleanup_scripts();
     free_events();
     iconv_close(ic_utf8_to_utf16);
     iconv_close(ic_utf16_to_utf8);
