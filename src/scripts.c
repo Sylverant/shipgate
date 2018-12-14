@@ -71,6 +71,7 @@ static const xmlChar *ship_script_action_text[] = {
     XC"ENEMY_HIT",
     XC"BOX_BREAK",
     XC,"UNK_COMMAND",
+    XC,"SDATA",
     NULL
 };
 
