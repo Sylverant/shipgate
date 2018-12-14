@@ -3431,12 +3431,13 @@ static int handle_sdata(ship_t *s, shipgate_sdata_pkt *pkt) {
         return -1;
     }
 
-    return script_execute(ScriptActionSData, SCRIPT_ARG_UINT32, s->key_idx,
-                          SCRIPT_ARG_UINT32, block, SCRIPT_ARG_UINT32, event_id,
-                          SCRIPT_ARG_UINT32, guildcard, SCRIPT_ARG_UINT8,
-                          pkt->episode, SCRIPT_ARG_UINT8, pkt->difficulty,
-                          SCRIPT_ARG_UINT8, pkt->version, SCRIPT_ARG_STRING,
-                          (size_t)data_len, pkt->data, SCRIPT_ARG_END);
+    return script_execute(ScriptActionSData, SCRIPT_ARG_PTR, s,
+                          SCRIPT_ARG_UINT32, s->key_idx, SCRIPT_ARG_UINT32,
+                          block, SCRIPT_ARG_UINT32, event_id, SCRIPT_ARG_UINT32,
+                          guildcard, SCRIPT_ARG_UINT8, pkt->episode,
+                          SCRIPT_ARG_UINT8, pkt->difficulty, SCRIPT_ARG_UINT8,
+                          pkt->version, SCRIPT_ARG_STRING, (size_t)data_len,
+                          pkt->data, SCRIPT_ARG_END);
 }
 
 /* Process one ship packet. */
