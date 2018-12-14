@@ -554,7 +554,7 @@ int script_execute(script_action_t event, ...) {
     /* Grab the return value from the lua function (it should be of type
        integer). */
     rv = lua_tointegerx(lstate, -1, &err);
-    if(err) {
+    if(!err) {
         debug(DBG_ERROR, "Script for event %d didn't return int\n",(int)event);
     }
 
