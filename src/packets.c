@@ -635,6 +635,9 @@ int send_script_check(ship_t *c, ship_script_t *scr) {
     strncpy(pkt->filename, scr->remote_fn, 32);
     pkt->chunk_crc = htonl(scr->crc);
 
+    if(scr->action)
+        pkt->action = htonl(scr->action);
+
     /* Send it away */
     return send_crypt(c, sizeof(shipgate_schunk_pkt));
 }
@@ -664,6 +667,9 @@ int send_script(ship_t *c, ship_script_t *scr) {
     pkt->chunk_length = htonl(scr->len);
     strncpy(pkt->filename, scr->remote_fn, 32);
     pkt->chunk_crc = htonl(scr->crc);
+
+    if(scr->action)
+        pkt->action = htonl(scr->action);
 
     /* Read the script file in... */
     if(!(fp = fopen(scr->local_fn, "rb"))) {
