@@ -438,6 +438,14 @@ typedef struct shipgate_sdata {
     uint8_t data[];
 } PACKED shipgate_sdata_pkt;
 
+/* Packet used to set a script to respond to an event. */
+typedef struct shipgate_sset {
+    shipgate_hdr_t hdr;
+    uint32_t action;
+    uint32_t reserved;
+    char filename[32];
+} PACKED shipgate_sset_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -454,7 +462,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_PC        0x0003      /* A decrypted PCv2 game packet */
 #define SHDR_TYPE_GC        0x0004      /* A decrypted Gamecube game packet */
 #define SHDR_TYPE_EP3       0x0005      /* A decrypted Episode 3 packet */
-#define SHDR_TYPE_LOGIN     0x0010      /* A login request */
+#define SHDR_TYPE_LOGIN     0x0010      /* A login request (deprecated) */
 #define SHDR_TYPE_COUNT     0x0011      /* A Client/Game Count update */
 #define SHDR_TYPE_SSTATUS   0x0012      /* A Ship has come up or gone down */
 #define SHDR_TYPE_PING      0x0013      /* A Ping packet, enough said */
@@ -483,6 +491,7 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_TLOGIN    0x002A      /* Token-based login request */
 #define SHDR_TYPE_SCHUNK    0x002B      /* Script chunk */
 #define SHDR_TYPE_SDATA     0x002C      /* Script data */
+#define SHDR_TYPE_SSET      0x002D      /* Script set */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -634,5 +643,8 @@ int send_script_check(ship_t *c, ship_script_t *scr);
 
 /* Send a script to a ship. */
 int send_script(ship_t *c, ship_script_t *scr);
+
+/* Send a script setup packet to a ship. */
+int send_sset(ship_t *c, uint32_t action, ship_script_t *scr);
 
 #endif /* !SHIPGATE_H */

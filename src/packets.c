@@ -681,3 +681,27 @@ int send_script(ship_t *c, ship_script_t *scr) {
     /* Send it away */
     return send_crypt(c, pkt_len);
 }
+
+int send_sset(ship_t *c, uint32_t action, ship_script_t *scr) {
+    shipgate_sset_pkt *pkt = (shipgate_sset_pkt *)sendbuf;
+
+    /* Don't try to send these to a ship that won't know what to do with them */
+    if(c->proto_ver < 16 || !(c->flags & LOGIN_FLAG_LUA))
+        return 0;
+
+    /* Make sure the requested operation makes sense... */
+    if(scr && scr->module)
+        return 0;
+
+    /* Fill in the easy stuff */
+    memset(pkt, 0, sizeof(shipgate_sset_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_sset_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SSET);
+    pkt->action = htonl(action);
+
+    if(scr)
+        strncpy(pkt->filename, scr->remote_fn, 32);
+
+    /* Send it away */
+    return send_crypt(c, sizeof(shipgate_sset_pkt));
+}
