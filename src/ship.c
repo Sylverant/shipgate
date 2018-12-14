@@ -3673,7 +3673,7 @@ static int ship_sendsdata_lua(lua_State *l) {
     lua_Integer rv = -1;
 
     if(lua_islightuserdata(l, 1) && lua_isinteger(l, 2) &&
-       lua_isinteger(l, 3) && && lua_isinteger(l, 4) && lua_isstring(l, 5)) {
+       lua_isinteger(l, 3) && lua_isinteger(l, 4) && lua_isstring(l, 5)) {
         c = (ship_t *)lua_touserdata(l, 1);
         event = (uint32_t)lua_tointeger(l, 2);
         gc = (uint32_t)lua_tointeger(l, 3);
