@@ -377,6 +377,8 @@ err:
     return rv;
 }
 
+extern int ship_register_lua(lua_State *l);
+
 void init_scripts(void) {
     /* Not that this should happen, but just in case... */
     if(lstate) {
@@ -393,6 +395,9 @@ void init_scripts(void) {
 
     /* Load up the standard libraries. */
     luaL_openlibs(lstate);
+
+    luaL_requiref(lstate, "ship", ship_register_lua, 1);
+    lua_pop(lstate, 1);
 
     /* Set the module search path to include the scripts/modules dir. */
     (void)luaL_dostring(lstate, "package.path = package.path .. "

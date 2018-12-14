@@ -36,6 +36,12 @@
 #include <sylverant/mtwist.h>
 #include <sylverant/md5.h>
 
+#ifdef ENABLE_LUA
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#endif
+
 #include "ship.h"
 #include "shipgate.h"
 
@@ -3656,3 +3662,39 @@ int handle_pkt(ship_t *c) {
 
     return rv;
 }
+
+#ifdef ENABLE_LUA
+
+static int ship_sendsdata_lua(lua_State *l) {
+    ship_t *c;
+    uint32_t event, gc, block;
+    const uint8_t *s;
+    size_t len;
+    lua_Integer rv = -1;
+
+    if(lua_islightuserdata(l, 1) && lua_isinteger(l, 2) &&
+       lua_isinteger(l, 3) && && lua_isinteger(l, 4) && lua_isstring(l, 5)) {
+        c = (ship_t *)lua_touserdata(l, 1);
+        event = (uint32_t)lua_tointeger(l, 2);
+        gc = (uint32_t)lua_tointeger(l, 3);
+        block = (uint32_t)lua_tointeger(l, 4);
+        s = (const uint8_t *)lua_tolstring(l, 5, &len);
+
+        rv = send_sdata(c, gc, block, event, s, (uint32_t)len);
+    }
+
+    lua_pushinteger(l, rv);
+    return 1;
+}
+
+static const luaL_Reg shiplib[] = {
+    { "sendScriptData", ship_sendsdata_lua },
+    { NULL, NULL }
+};
+
+int ship_register_lua(lua_State *l) {
+    luaL_newlib(l, shiplib);
+    return 1;
+}
+
+#endif
