@@ -716,6 +716,7 @@ int send_sset(ship_t *c, uint32_t action, ship_script_t *scr) {
 int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
                const uint8_t *data, uint32_t len) {
     shipgate_sdata_pkt *pkt = (shipgate_sdata_pkt *)sendbuf;
+    uint16_t pkt_len;
 
     /* Don't try to send these to a ship that won't know what to do with them */
     if(c->proto_ver < 16 || !(c->flags & LOGIN_FLAG_LUA))
@@ -727,9 +728,13 @@ int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
         return -1;
     }
 
+    pkt_len = sizeof(shipgate_sdata_pkt) + len;
+    if(pkt_len & 0x07)
+        pkt_len = (pkt_len + 8) & 0xFFF8;
+
     /* Fill in the packet... */
-    memset(pkt, 0, sizeof(shipgate_sdata_pkt));
-    pkt->hdr.pkt_len = htons(sizeof(shipgate_sdata_pkt) + len);
+    memset(pkt, 0, pkt_len);
+    pkt->hdr.pkt_len = htons(pkt_len);
     pkt->hdr.pkt_type = htons(SHDR_TYPE_SDATA);
     pkt->event_id = htonl(event);
     pkt->data_len = htonl(len);
@@ -738,5 +743,5 @@ int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
     memcpy(pkt->data, data, len);
 
     /* Send it away. */
-    return send_crypt(c, sizeof(shipgate_sdata_pkt) + len);
+    return send_crypt(c, pkt_len);
 }
