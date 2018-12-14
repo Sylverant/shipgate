@@ -711,3 +711,32 @@ int send_sset(ship_t *c, uint32_t action, ship_script_t *scr) {
     /* Send it away */
     return send_crypt(c, sizeof(shipgate_sset_pkt));
 }
+
+/* Send a script data packet */
+int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
+               const uint8_t *data, uint32_t len) {
+    shipgate_sdata_pkt *pkt = (shipgate_sdata_pkt *)sendbuf;
+
+    /* Don't try to send these to a ship that won't know what to do with them */
+    if(c->proto_ver < 16 || !(c->flags & LOGIN_FLAG_LUA))
+        return 0;
+
+    /* Make sure the length is sane... */
+    if(len > 32768) {
+        debug(DBG_WARN, "Dropping huge sdata packet\n");
+        return -1;
+    }
+
+    /* Fill in the packet... */
+    memset(pkt, 0, sizeof(shipgate_sdata_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_sdata_pkt) + len);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SDATA);
+    pkt->event_id = htonl(event);
+    pkt->data_len = htonl(len);
+    pkt->guildcard = htonl(gc);
+    pkt->block = htonl(block);
+    memcpy(pkt->data, data, len);
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_sdata_pkt) + len);
+}

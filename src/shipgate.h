@@ -647,4 +647,8 @@ int send_script(ship_t *c, ship_script_t *scr);
 /* Send a script setup packet to a ship. */
 int send_sset(ship_t *c, uint32_t action, ship_script_t *scr);
 
+/* Send a script data packet to a ship. */
+int send_sdata(ship_t *c,uint32_t gc, uint32_t block, uint32_t event,
+               const uint8_t *data, uint32_t len);
+
 #endif /* !SHIPGATE_H */
