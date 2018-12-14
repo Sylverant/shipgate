@@ -63,12 +63,14 @@ static const xmlChar *ship_script_action_text[] = {
     XC"UNK_SHIP_PKT",
     XC"UNK_BLOCK_PKT",
     XC"UNK_EP3_PKT",
-    XC"ENEMY_KILL",
-    XC"ENEMY_HIT",
     XC"TEAM_CREATE",
     XC"TEAM_DESTROY",
     XC"TEAM_JOIN",
     XC"TEAM_LEAVE",
+    XC"ENEMY_KILL",
+    XC"ENEMY_HIT",
+    XC"BOX_BREAK",
+    XC,"UNK_COMMAND",
     NULL
 };
 
@@ -514,6 +516,13 @@ int script_execute(script_action_t event, ...) {
                 size_t len = va_arg(ap, size_t);
                 char *str = va_arg(ap, char *);
                 lua_pushlstring(lstate, str, len);
+                break;
+            }
+
+            case SCRIPT_ARG_CSTRING:
+            {
+                char *str = va_arg(ap, char *);
+                lua_pushstring(lstate, str);
                 break;
             }
 
