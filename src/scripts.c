@@ -74,6 +74,7 @@ static const xmlChar *ship_script_action_text[] = {
     XC"SDATA",
     XC"UNK_MENU",
     XC"BANK_ACTION",
+    XC"CHANGE_AREA",
     NULL
 };
 
