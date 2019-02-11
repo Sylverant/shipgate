@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017,
-                  2018 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018,
+                  2019 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -1883,7 +1883,7 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
     return rv;
 }
 
-/* Handle a GM login request coming from a ship. */
+/* Handle a client login request coming from a ship. */
 static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     uint32_t gc, block;
     char query[256];
@@ -1899,12 +1899,12 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
        issue with the packet's sanity. */
     len = ntohs(pkt->hdr.pkt_len);
     if(len != sizeof(shipgate_gmlogin_req_pkt)) {
-        debug(DBG_WARN, "Ship %s sent invalid GM Login!?\n", c->name);
+        debug(DBG_WARN, "Ship %s sent invalid client login!?\n", c->name);
         return -1;
     }
 
     if(pkt->username[31] != '\0' || pkt->password[31] != '\0') {
-        debug(DBG_WARN, "Ship %s sent unterminated GM Login\n", c->name);
+        debug(DBG_WARN, "Ship %s sent unterminated client login\n", c->name);
         return -1;
     }
 
@@ -1939,11 +1939,11 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
 
     if((row = sylverant_db_result_fetch(result)) == NULL) {
         sylverant_db_result_free(result);
-        debug(DBG_LOG, "Failed login - no data? (user: %s, gc: %u)\n",
+        debug(DBG_LOG, "Failed login - bad username? (user: %s, gc: %u)\n",
               pkt->username, gc);
 
         return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_NOT_GM, (uint8_t *)&pkt->guildcard, 8);
+                          ERR_GMLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Check the password. */
@@ -1964,8 +1964,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
         sylverant_db_result_free(result);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
-                          (uint8_t *)&pkt->guildcard, 8);
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
+                          ERR_GMLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the privilege level out of the packet */
@@ -1981,8 +1981,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               priv);
         sylverant_db_result_free(result);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
-                          (uint8_t *)&pkt->guildcard, 8);
+        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
+                          ERR_GMLOGIN_BAD_PRIVS, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* We're done if we got this far. */
