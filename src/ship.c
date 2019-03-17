@@ -3363,7 +3363,7 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
 
         return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_NOT_GM, (uint8_t *)&pkt->guildcard, 8);
+                          ERR_GMLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the privilege level out of the packet */
@@ -3444,6 +3444,76 @@ static int handle_sdata(ship_t *s, shipgate_sdata_pkt *pkt) {
                           SCRIPT_ARG_UINT8, pkt->difficulty, SCRIPT_ARG_UINT8,
                           pkt->version, SCRIPT_ARG_STRING, (size_t)data_len,
                           pkt->data, SCRIPT_ARG_END);
+}
+
+static int handle_qflag_set(ship_t *c, shipgate_qflag_pkt *pkt) {
+    char query[1024];
+    uint32_t gc, block, flag_id, value, qid;
+    void *result;
+    char **row;
+
+    /* Parse out the packet data */
+    gc = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+    flag_id = ntohl(pkt->flag_id);
+    qid = ntohl(pkt->quest_id);
+    value = ntohl(pkt->value);
+
+    /* Build the db query */
+    sprintf(query, "INSERT INTO quest_flags_short (guildcard, flag_id, value) "
+            "VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32 "') ON DUPLICATE "
+            "KEY UPDATE value=VALUES(value)", gc, flag_id, value);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_QFLAG_SET, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 16);
+    }
+
+    return send_qflag(c, SHDR_TYPE_QFLAG_SET, gc, block, flag_id, qid, value);
+}
+
+static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
+    char query[1024];
+    uint32_t gc, block, flag_id, value, qid;
+    void *result;
+    char **row;
+
+    /* Parse out the packet data */
+    gc = ntohl(pkt->guildcard);
+    block = ntohl(pkt->block);
+    flag_id = ntohl(pkt->flag_id);
+    qid = ntohl(pkt->quest_id);
+
+    /* Build the db query */
+    sprintf(query, "SELECT value FROM quest_flags_short WHERE guildcard='%"
+            PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_QFLAG_GET, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 16);
+    }
+
+    if(!(result = sylverant_db_result_store(&conn))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_error(c, SHDR_TYPE_QFLAG_GET, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->guildcard, 16);
+    }
+
+    if(!(row = sylverant_db_result_fetch(result))) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        sylverant_db_result_free(result);
+        return send_error(c, SHDR_TYPE_QFLAG_GET, SHDR_FAILURE,
+                          ERR_QFLAG_NO_DATA, (uint8_t *)&pkt->guildcard, 16);
+    }
+
+    value = (uint32_t)strtoul(row[0], NULL, 0);
+    sylverant_db_result_free(result);
+
+    return send_qflag(c, SHDR_TYPE_QFLAG_GET, gc, block, flag_id, qid, value);
 }
 
 /* Process one ship packet. */
@@ -3561,6 +3631,12 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_SDATA:
             return handle_sdata(c, (shipgate_sdata_pkt *)pkt);
+
+        case SHDR_TYPE_QFLAG_SET:
+            return handle_qflag_set(c, (shipgate_qflag_pkt *)pkt);
+
+        case SHDR_TYPE_QFLAG_GET:
+            return handle_qflag_get(c, (shipgate_qflag_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);

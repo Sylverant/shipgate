@@ -745,3 +745,27 @@ int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
     /* Send it away. */
     return send_crypt(c, pkt_len);
 }
+
+/* Send a quest flag response */
+int send_qflag(ship_t *c, uint16_t type, uint32_t gc, uint32_t block,
+               uint32_t fid, uint32_t qid, uint32_t value) {
+    shipgate_qflag_pkt *pkt = (shipgate_qflag_pkt *)sendbuf;
+
+    /* Don't try to send these to a ship that won't know what to do with them */
+    if(c->proto_ver < 17)
+        return 0;
+
+    /* Fill in the packet... */
+    memset(pkt, 0, sizeof(shipgate_qflag_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_qflag_pkt));
+    pkt->hdr.pkt_type = htons(type);
+    pkt->hdr.flags = htons(SHDR_RESPONSE);
+    pkt->guildcard = htonl(gc);
+    pkt->block = htonl(block);
+    pkt->flag_id = htonl(fid);
+    pkt->quest_id = htonl(qid);
+    pkt->value = htonl(value);
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_qflag_pkt));
+}

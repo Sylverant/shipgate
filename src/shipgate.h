@@ -29,7 +29,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 10
-#define SHIPGATE_MAXIMUM_PROTO_VER 16
+#define SHIPGATE_MAXIMUM_PROTO_VER 17
 
 #ifdef PACKED
 #undef PACKED
@@ -447,6 +447,17 @@ typedef struct shipgate_sset {
     char filename[32];
 } PACKED shipgate_sset_pkt;
 
+/* Packet used to set a quest flag or to read one back. */
+typedef struct shipgate_qflag {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t block;
+    uint32_t flag_id;
+    uint32_t quest_id;
+    uint32_t reserved;
+    uint32_t value;
+} PACKED shipgate_qflag_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -493,6 +504,8 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_SCHUNK    0x002B      /* Script chunk */
 #define SHDR_TYPE_SDATA     0x002C      /* Script data */
 #define SHDR_TYPE_SSET      0x002D      /* Script set */
+#define SHDR_TYPE_QFLAG_SET 0x002E      /* Set quest flag */
+#define SHDR_TYPE_QFLAG_GET 0x002F      /* Read quest flag */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -568,6 +581,10 @@ static const char shipgate_login_msg[] =
 
 /* Error codes for schunk */
 #define ERR_SCHUNK_NEED_SCRIPT  0x00000001
+
+/* Error codes for quest flags */
+#define ERR_QFLAG_NO_DATA       0x00000001
+#define ERR_QFLAG_INVALID_FLAG  0x00000002
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
@@ -652,5 +669,9 @@ int send_sset(ship_t *c, uint32_t action, ship_script_t *scr);
 /* Send a script data packet to a ship. */
 int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
                const uint8_t *data, uint32_t len);
+
+/* Send a quest flag response */
+int send_qflag(ship_t *c, uint16_t type, uint32_t gc, uint32_t block,
+               uint32_t fid, uint32_t qid, uint32_t value);
 
 #endif /* !SHIPGATE_H */
