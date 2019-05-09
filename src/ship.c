@@ -3776,7 +3776,7 @@ static int ship_writeLog_lua(lua_State *l) {
 
 static const luaL_Reg shiplib[] = {
     { "sendScriptData", ship_sendsdata_lua },
-    { "writeLog", ship_writelog_lua },
+    { "writeLog", ship_writeLog_lua },
     { NULL, NULL }
 };
 
