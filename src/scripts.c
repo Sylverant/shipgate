@@ -400,7 +400,7 @@ void init_scripts(void) {
     /* Load up the standard libraries. */
     luaL_openlibs(lstate);
 
-    luaL_requiref(lstate, "ship", ship_register_lua, 1);
+    luaL_requiref(lstate, "shipgate", ship_register_lua, 1);
     lua_pop(lstate, 1);
 
     /* Set the module search path to include the scripts/modules dir. */

@@ -3763,8 +3763,20 @@ static int ship_sendsdata_lua(lua_State *l) {
     return 1;
 }
 
+static int ship_writeLog_lua(lua_State *l) {
+    const char *s;
+
+    if(lua_isstring(l, 1)) {
+        s = (const char *)lua_tostring(l, 1);
+        debug(DBG_LOG, "%s\n", s);
+    }
+
+    return 0;
+}
+
 static const luaL_Reg shiplib[] = {
     { "sendScriptData", ship_sendsdata_lua },
+    { "writeLog", ship_writelog_lua },
     { NULL, NULL }
 };
 
