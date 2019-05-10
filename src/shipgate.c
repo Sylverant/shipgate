@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014, 2018 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2018, 2019 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -51,6 +51,7 @@ int pidfile_remove(struct pidfh *pfh);
 #include "shipgate.h"
 #include "ship.h"
 #include "scripts.h"
+#include "packets.h"
 
 #ifndef PID_DIR
 #define PID_DIR "/var/run"
@@ -79,6 +80,7 @@ gnutls_priority_t tls_prio;
 static gnutls_dh_params_t dh_params;
 
 static volatile sig_atomic_t shutting_down = 0;
+static volatile sig_atomic_t resend_scripts = 0;
 
 /* Events... */
 uint32_t event_count;
@@ -90,6 +92,9 @@ static int dont_daemonize = 0;
 static const char *pidfile_name = NULL;
 static struct pidfh *pf = NULL;
 static const char *runas_user = RUNAS_DEFAULT;
+
+extern ship_script_t *scripts;
+extern uint32_t script_count;
 
 /* Print information about this program to stdout. */
 static void print_program_info() {
@@ -440,6 +445,7 @@ static void open_db() {
 
 void run_server(int tsock, int tsock6) {
     int nfds;
+    uint32_t j;
     struct sockaddr_in addr;
     struct sockaddr_in6 addr6;
     int asock;
@@ -499,8 +505,21 @@ void run_server(int tsock, int tsock6) {
                 }
             }
 
+#ifdef ENABLE_LUA
+            if(!i->disconnected && resend_scripts) {
+                /* Send script check packets, if the ship supports scripting */
+                if(i->proto_ver >= 16 && i->flags & LOGIN_FLAG_LUA) {
+                    for(j = 0; j < script_count; ++j) {
+                        send_script_check(i, &scripts[j]);
+                    }
+                }
+            }
+#endif
+
             i = tmp;
         }
+
+        resend_scripts = 0;
 
         /* Add the main listening sockets to the read fd_set */
         if(tsock > -1) {
@@ -754,6 +773,16 @@ static void sigusr1_hnd(int signum, siginfo_t *inf, void *ptr) {
     shutting_down = 2;
 }
 
+static void sigusr2_hnd(int signum, siginfo_t *inf, void *ptr) {
+    (void)signum;
+    (void)inf;
+    (void)ptr;
+
+    cleanup_scripts();
+    init_scripts();
+    resend_scripts = 1;
+}
+
 /* Install any handlers for signals we care about */
 static void install_signal_handlers() {
     struct sigaction sa;
@@ -803,6 +832,17 @@ static void install_signal_handlers() {
     if(sigaction(SIGUSR1, &sa, NULL) < 0) {
         perror("sigaction");
         fprintf(stderr, "Can't set SIGUSR1 handler.\n");
+    }
+
+    /* Set up the SIGUSR2 handler to reload scripts... */
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = NULL;
+    sa.sa_sigaction = &sigusr2_hnd;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+
+    if(sigaction(SIGUSR2, &sa, NULL) < 0) {
+        perror("sigaction");
+        fprintf(stderr, "Can't set SIGUSR2 handler.\n");
     }
 }
 
