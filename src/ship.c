@@ -3460,17 +3460,31 @@ static int handle_qflag_set(ship_t *c, shipgate_qflag_pkt *pkt) {
     value = ntohl(pkt->value);
 
     /* Build the db query */
-    if(!(flag_id & 0x80000000)) {
-        sprintf(query, "INSERT INTO quest_flags_short (guildcard, flag_id, "
-                " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32 "') "
-                "ON DUPLICATE KEY UPDATE value=VALUES(value)", gc, flag_id,
-                value & 0xFFFF);
+    if(!(flag_id & QFLAG_DELETE_FLAG)) {
+        if(!(flag_id & QFLAG_LONG_FLAG)) {
+            sprintf(query, "INSERT INTO quest_flags_short (guildcard, flag_id, "
+                    " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32
+                    "') ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
+                    flag_id & 0x00FFFFFF, value & 0xFFFF);
+        }
+        else {
+            sprintf(query, "INSERT INTO quest_flags_long (guildcard, flag_id, "
+                    " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32
+                    "') ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
+                    flag_id & 0x00FFFFFF, value);
+        }
     }
     else {
-        sprintf(query, "INSERT INTO quest_flags_long (guildcard, flag_id, "
-                " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32 "') "
-                "ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
-                flag_id & 0x7FFFFFFF, value);
+        if(!(flag_id & QFLAG_LONG_FLAG)) {
+            sprintf(query, "DELETE FROM quest_flags_short WHERE guildcard='%"
+                    PRIu32 "' AND flag_id='%" PRIu32 "'", gc,
+                    flag_id & 0x00FFFFFF);
+        }
+        else {
+            sprintf(query, "DELETE FROM quest_flags_long WHERE guildcard='%"
+                    PRIu32 "' AND flag_id='%" PRIu32 "'", gc,
+                    flag_id & 0x00FFFFFF);
+        }
     }
 
     /* Execute the query */
@@ -3496,14 +3510,22 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     flag_id = ntohl(pkt->flag_id);
     qid = ntohl(pkt->quest_id);
 
+    /* Make sure the packet is sane... */
+    if((flag_id & QFLAG_DELETE_FLAG)) {
+        debug(DBG_WARN, "Ship sent delete flag bit on get flag packet!"
+              "Dropping request.\n");
+        return send_error(c, SHDR_TYPE_QFLAG_GET, SHDR_FAILURE,
+                          ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 16);
+    }
+
     /* Build the db query */
-    if(!(flag_id & 0x80000000)) {
+    if(!(flag_id & QFLAG_LONG_FLAG)) {
         sprintf(query, "SELECT value FROM quest_flags_short WHERE guildcard='%"
-                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id);
+                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x00FFFFFF);
     }
     else {
         sprintf(query, "SELECT value FROM quest_flags_long WHERE guildcard='%"
-                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x7FFFFFFF);
+                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x00FFFFFF);
     }
 
     /* Execute the query */

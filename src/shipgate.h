@@ -588,6 +588,10 @@ static const char shipgate_login_msg[] =
 #define ERR_QFLAG_NO_DATA       0x00000001
 #define ERR_QFLAG_INVALID_FLAG  0x00000002
 
+/* OR these into the flag_id for qflags to modify how the packets work... */
+#define QFLAG_LONG_FLAG         0x80000000
+#define QFLAG_DELETE_FLAG       0x40000000  /* Only valid on a set */
+
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
 
