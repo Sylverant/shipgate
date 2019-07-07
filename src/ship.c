@@ -3037,6 +3037,7 @@ static int handle_useropt(ship_t *c, shipgate_user_opt_pkt *pkt) {
         case USER_OPT_GC_PROTECT:
         case USER_OPT_TRACK_KILLS:
         case USER_OPT_LEGIT_ALWAYS:
+        case USER_OPT_WORD_CENSOR:
             /* The full option should be 16 bytes */
             if(optlen != 16) {
                 return -4;
