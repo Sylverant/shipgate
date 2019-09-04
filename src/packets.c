@@ -303,11 +303,11 @@ int send_usrloginreply(ship_t *c, uint32_t gc, uint32_t block, int good,
     uint16_t flags = good ? SHDR_RESPONSE : SHDR_FAILURE;
 
     /* Clear the packet first */
-    memset(pkt, 0, sizeof(shipgate_gmlogin_reply_pkt));
+    memset(pkt, 0, sizeof(shipgate_usrlogin_reply_pkt));
 
     /* Fill in the response. */
-    pkt->hdr.pkt_len = htons(sizeof(shipgate_gmlogin_reply_pkt));
-    pkt->hdr.pkt_type = htons(SHDR_TYPE_GMLOGIN);
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_usrlogin_reply_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_USRLOGIN);
     pkt->hdr.flags = htons(flags);
     pkt->hdr.reserved = 0;
     pkt->hdr.version = 0;
