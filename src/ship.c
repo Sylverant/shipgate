@@ -3306,14 +3306,14 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
 }
 
 /* Handle a token-based user login request. */
-static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
+static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     uint32_t gc, block;
     char query[256];
     void *result;
     char **row;
     char esc[65], esc2[65];
     uint16_t len;
-    uint8_t priv;
+    uint32_t priv;
     uint32_t account_id;
 
     /* Clear old requests from the table. */
@@ -3324,14 +3324,14 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
         debug(DBG_WARN, "Couldn't clear old tokens!\n");
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Check the sanity of the packet. Disconnect the ship if there's some odd
        issue with the packet's sanity. */
     len = ntohs(pkt->hdr.pkt_len);
-    if(len != sizeof(shipgate_gmlogin_req_pkt)) {
+    if(len != sizeof(shipgate_usrlogin_req_pkt)) {
         debug(DBG_WARN, "Ship %s sent invalid token Login!?\n", c->name);
         return -1;
     }
@@ -3358,7 +3358,7 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
@@ -3368,7 +3368,7 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
@@ -3377,12 +3377,20 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
         debug(DBG_LOG, "Failed token login (user: %s, gc: %u)\n",
               pkt->username, gc);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                          ERR_SURLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the privilege level out of the packet */
-    priv = (uint8_t)atoi(row[0]);
+    errno = 0;
+    priv = (uint32_t)strtoul(row[0], NULL, 0);
+
+    if(errno != 0) {
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                          ERR_USRLOGIN_BAD_PRIVS, (uint8_t *)&pkt->guildcard,
+                          8);
+    }
+
     account_id = (uint32_t)strtoul(row[1], NULL, 0);
 
     /* Filter out any privileges that don't make sense. Can't have global GM
@@ -3395,7 +3403,7 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               priv);
         sylverant_db_result_free(result);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
@@ -3409,6 +3417,12 @@ static int handle_tlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't clear spent token!\n");
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+    }
+
+    /* The privilege field went to 32-bits in version 18. */
+    if(c->proto_ver < 18) {
+        priv &= (CLIENT_PRIV_LOCAL_GM | CLIENT_PRIV_GLOBAL_GM |
+                 CLIENT_PRIV_LOCAL_ROOT | CLIENT_PRIV_GLOBAL_ROOT);
     }
 
     /* Send a success message. */
@@ -3616,8 +3630,8 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
         case SHDR_TYPE_CREQ:
             return handle_creq(c, (shipgate_char_req_pkt *)pkt);
 
-        case SHDR_TYPE_GMLOGIN:
-            return handle_gmlogin(c, (shipgate_gmlogin_req_pkt *)pkt);
+        case SHDR_TYPE_USRLOGIN:
+            return handle_usrlogin(c, (shipgate_usrlogin_req_pkt *)pkt);
 
         case SHDR_TYPE_GCBAN:
         case SHDR_TYPE_IPBAN:
@@ -3669,7 +3683,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_mkill(c, (shipgate_mkill_pkt *)pkt);
 
         case SHDR_TYPE_TLOGIN:
-            return handle_tlogin(c, (shipgate_gmlogin_req_pkt *)pkt);
+            return handle_tlogin(c, (shipgate_usrlogin_req_pkt *)pkt);
 
         case SHDR_TYPE_SCHUNK:
             /* Sanity check... */
