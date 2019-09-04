@@ -3426,7 +3426,7 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     }
 
     /* Send a success message. */
-    return send_gmreply(c, gc, block, 1, priv);
+    return send_usrloginreply(c, gc, block, 1, priv);
 }
 
 static int handle_schunk(ship_t *s, shipgate_schunk_err_pkt *pkt) {
