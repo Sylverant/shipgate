@@ -3378,7 +3378,7 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
               pkt->username, gc);
 
         return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
-                          ERR_SURLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
+                          ERR_USRLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the privilege level out of the packet */
