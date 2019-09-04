@@ -1884,7 +1884,7 @@ static int handle_creq(ship_t *c, shipgate_char_req_pkt *pkt) {
 }
 
 /* Handle a client login request coming from a ship. */
-static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
+static int handle_usrlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     uint32_t gc, block;
     char query[256];
     void *result;
@@ -1893,12 +1893,12 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
     unsigned char hash[16];
     char esc[65];
     uint16_t len;
-    uint8_t priv;
+    uint32_t priv;
 
     /* Check the sanity of the packet. Disconnect the ship if there's some odd
        issue with the packet's sanity. */
     len = ntohs(pkt->hdr.pkt_len);
-    if(len != sizeof(shipgate_gmlogin_req_pkt)) {
+    if(len != sizeof(shipgate_usrlogin_req_pkt)) {
         debug(DBG_WARN, "Ship %s sent invalid client login!?\n", c->name);
         return -1;
     }
@@ -1923,7 +1923,7 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
@@ -1933,7 +1933,7 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE, ERR_BAD_ERROR,
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
@@ -1942,8 +1942,8 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
         debug(DBG_LOG, "Failed login - bad username? (user: %s, gc: %u)\n",
               pkt->username, gc);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                          ERR_USRLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Check the password. */
@@ -1964,12 +1964,19 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               pkt->username, gc);
         sylverant_db_result_free(result);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                          ERR_USRLOGIN_BAD_CRED, (uint8_t *)&pkt->guildcard, 8);
     }
 
     /* Grab the privilege level out of the packet */
-    priv = (uint8_t)atoi(row[2]);
+    errno = 0;
+    priv = (uint32_t)strtoul(row[2], NULL, 0);
+
+    if(errno != 0) {
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                          ERR_USRLOGIN_BAD_PRIVS, (uint8_t *)&pkt->guildcard,
+                          8);
+    }
 
     /* Filter out any privileges that don't make sense. Can't have global GM
        without local GM support. Also, anyone set as a root this way must have
@@ -1981,15 +1988,22 @@ static int handle_gmlogin(ship_t *c, shipgate_gmlogin_req_pkt *pkt) {
               priv);
         sylverant_db_result_free(result);
 
-        return send_error(c, SHDR_TYPE_GMLOGIN, SHDR_FAILURE,
-                          ERR_GMLOGIN_BAD_PRIVS, (uint8_t *)&pkt->guildcard, 8);
+        return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                          ERR_USRLOGIN_BAD_PRIVS, (uint8_t *)&pkt->guildcard,
+                          8);
+    }
+
+    /* The privilege field went to 32-bits in version 18. */
+    if(c->proto_ver < 18) {
+        priv &= (CLIENT_PRIV_LOCAL_GM | CLIENT_PRIV_GLOBAL_GM |
+                 CLIENT_PRIV_LOCAL_ROOT | CLIENT_PRIV_GLOBAL_ROOT);
     }
 
     /* We're done if we got this far. */
     sylverant_db_result_free(result);
 
     /* Send a success message. */
-    return send_gmreply(c, gc, block, 1, priv);
+    return send_usrloginreply(c, gc, block, 1, priv);
 }
 
 /* Handle a ban request coming from a ship. */

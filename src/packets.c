@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014, 2016, 2018 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2016, 2018, 2019 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -296,9 +296,10 @@ int send_cdata(ship_t *c, uint32_t gc, uint32_t slot, void *cdata, int sz,
     return send_crypt(c, sizeof(shipgate_char_data_pkt) + sz);
 }
 
-/* Send a reply to a GM login request. */
-int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p) {
-    shipgate_gmlogin_reply_pkt *pkt = (shipgate_gmlogin_reply_pkt *)sendbuf;
+/* Send a reply to a user login request. */
+int send_usrloginreply(ship_t *c, uint32_t gc, uint32_t block, int good,
+                       uint32_t p) {
+    shipgate_usrlogin_reply_pkt *pkt = (shipgate_usrlogin_reply_pkt *)sendbuf;
     uint16_t flags = good ? SHDR_RESPONSE : SHDR_FAILURE;
 
     /* Clear the packet first */
@@ -313,9 +314,16 @@ int send_gmreply(ship_t *c, uint32_t gc, uint32_t block, int good, uint8_t p) {
 
     pkt->guildcard = htonl(gc);
     pkt->block = htonl(block);
-    pkt->priv = p;
 
-    return send_crypt(c, sizeof(shipgate_gmlogin_reply_pkt));
+    /* In protocol versions less than 18, priv was an 8 bit field. Since
+       multibyte stuff is in network byte order, we have to shift to make that
+       work. */
+    if(c->proto_ver < 18)
+        pkt->priv = htonl(p << 24);
+    else
+        pkt->priv = htonl(p);
+
+    return send_crypt(c, sizeof(shipgate_usrlogin_reply_pkt));
 }
 
 /* Send a client/game update packet. */
