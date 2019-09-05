@@ -232,8 +232,8 @@ typedef struct shipgate_usrlogin_reply {
     shipgate_hdr_t hdr;
     uint32_t guildcard;
     uint32_t block;
-    uint8_t priv;
-    uint8_t reserved[7];
+    uint32_t priv;
+    uint8_t reserved[4];
 } PACKED shipgate_usrlogin_reply_pkt;
 
 /* A packet used to set a ban. */
