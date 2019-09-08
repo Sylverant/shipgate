@@ -500,7 +500,10 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
 
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
-        send_ship_status(j, c, 1);
+        /* Don't send ships with privilege bits set to ships not running
+           protocol v18 or newer. */
+        if(!c->privileges || j->proto_ver >= 18)
+            send_ship_status(j, c, 1);
 
         /* Send this ship to the new ship, as long as that wasn't done just
            above here. */
