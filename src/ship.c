@@ -469,7 +469,7 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
             "ship_id, gm_only, games, menu_code, flags, ship_number, "
             "ship_ip6_high, ship_ip6_low, protocol_ver, privileges) VALUES "
             "('%s', '%hu', '%u', '%hu', '%u', '%u', '%d', '%hu', '%hu', '%u', "
-            "'%d', '%llu', '%llu', '%u')", c->name, c->clients,
+            "'%d', '%llu', '%llu', '%u', '%u')", c->name, c->clients,
             ntohl(c->remote_addr), c->port, 0, c->key_idx,
             !!(c->flags & LOGIN_FLAG_GMONLY), c->games, c->menu_code, c->flags,
             ship_number, (unsigned long long)ip6_hi,
