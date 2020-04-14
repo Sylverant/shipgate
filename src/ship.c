@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
     Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018,
-                  2019 Lawrence Sebald
+                  2019, 2020 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -368,6 +368,14 @@ void destroy_connection(ship_t *c) {
 
         if(sylverant_db_query(&conn, query)) {
             debug(DBG_ERROR, "Couldn't clear %s online_clients\n", c->name);
+        }
+
+        /* Remove any clients in the transient_clients table on that ship */
+        sprintf(query, "DELETE FROM transient_clients WHERE ship_id='%hu'",
+                c->key_idx);
+
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_ERROR, "Couldn't clear %s transient_clients\n", c->name);
         }
     }
 
@@ -2183,6 +2191,12 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     gc = ntohl(pkt->guildcard);
     bl = ntohl(pkt->blocknum);
 
+    /* Is this a transient client (that is to say someone on the PC NTE)? */
+    if(gc >= 500 && gc < 600) {
+        /* XXXX */
+        return 0;
+    }
+
     /* Insert the client into the online_clients table */
     sylverant_db_escape_str(&conn, tmp, name, strlen(name));
     sprintf(query, "INSERT INTO online_clients(guildcard, name, ship_id, "
@@ -2191,6 +2205,8 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* If the query fails, most likely its a primary key violation, so assume
        the user is already logged in */
     if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Error adding client to online_clients table: %s\n",
+              sylverant_db_error(&conn));
         return send_error(c, SHDR_TYPE_BLKLOGIN, SHDR_FAILURE,
                           ERR_BLOGIN_ONLINE, (uint8_t *)&pkt->guildcard, 8);
     }
@@ -2445,6 +2461,12 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     gc = ntohl(pkt->guildcard);
     bl = ntohl(pkt->blocknum);
 
+    /* Is this a transient client (that is to say someone on the PC NTE)? */
+    if(gc >= 500 && gc < 600) {
+        /* XXXX */
+        return 0;
+    }
+
     /* Delete the client from the online_clients table */
     sprintf(query, "DELETE FROM online_clients WHERE guildcard='%u' AND "
             "ship_id='%hu'", gc, c->key_idx);
@@ -2506,6 +2528,12 @@ static int handle_friendlist_add(ship_t *c, shipgate_friend_add_pkt *pkt) {
     /* Parse out the guildcards */
     ugc = ntohl(pkt->user_guildcard);
     fgc = ntohl(pkt->friend_guildcard);
+
+    /* Is this a transient client (that is to say someone on the PC NTE)? */
+    if((ugc >= 500 && ugc < 600) || (fgc >= 500 && fgc < 600)) {
+        /* XXXX */
+        return 0;
+    }
 
     /* Escape the name string */
     pkt->friend_nick[31] = 0;
@@ -2569,6 +2597,12 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     gc = ntohl(pkt->guildcard);
     lid = ntohl(pkt->lobby_id);
 
+    /* Is this a transient client (that is to say someone on the PC NTE)? */
+    if(gc >= 500 && gc < 600) {
+        /* XXXX */
+        return 0;
+    }
+
     /* Update the client's entry */
     sylverant_db_escape_str(&conn, tmp, pkt->lobby_name,
                             strlen(pkt->lobby_name));
@@ -2622,6 +2656,13 @@ static int handle_block_clients(ship_t *c, shipgate_bclients_pkt *pkt) {
         return -1;
     }
 
+    sprintf(query, "DELETE FROM transient_clients WHERE ship_id='%hu' AND "
+            "block='%u'", c->key_idx, bl);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return -1;
+    }
+
     /* Run through each entry */
     for(i = 0; i < count; ++i) {
         /* Is the name a Blue Burst-style (UTF-16) name or not? */
@@ -2655,6 +2696,12 @@ static int handle_block_clients(ship_t *c, shipgate_bclients_pkt *pkt) {
 
         /* Escape the name string */
         sylverant_db_escape_str(&conn, tmp, name, strlen(name));
+
+        /* Is this a transient client (that is to say someone on the PC NTE)? */
+        if(gc >= 500 && gc < 600) {
+            /* XXXX */
+            continue;
+        }
 
         /* If we're not in a lobby, that's all we need */
         if(lid == 0) {
@@ -2719,6 +2766,13 @@ static int handle_clients12(ship_t *c, shipgate_bclients_12_pkt *pkt) {
         return -1;
     }
 
+    sprintf(query, "DELETE FROM transient_clients WHERE ship_id='%hu' AND "
+            "block='%u'", c->key_idx, bl);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return -1;
+    }
+
     /* Run through each entry */
     for(i = 0; i < count; ++i) {
         /* Is the name a Blue Burst-style (UTF-16) name or not? */
@@ -2750,6 +2804,12 @@ static int handle_clients12(ship_t *c, shipgate_bclients_12_pkt *pkt) {
         gc = ntohl(pkt->entries[i].guildcard);
         lid = ntohl(pkt->entries[i].lobby);
         dlid = ntohl(pkt->entries[i].dlobby);
+
+        /* Is this a transient client (that is to say someone on the PC NTE)? */
+        if(gc >= 500 && gc < 600) {
+            /* XXXX */
+            continue;
+        }
 
         /* Escape the name string */
         sylverant_db_escape_str(&conn, tmp, name, strlen(name));

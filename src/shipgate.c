@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014, 2018, 2019 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2018, 2019, 2020 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -99,7 +99,7 @@ extern uint32_t script_count;
 /* Print information about this program to stdout. */
 static void print_program_info() {
     printf("Sylverant Shipgate version %s\n", VERSION);
-    printf("Copyright (C) 2009-2019 Lawrence Sebald\n\n");
+    printf("Copyright (C) 2009-2020 Lawrence Sebald\n\n");
     printf("This program is free software: you can redistribute it and/or\n"
            "modify it under the terms of the GNU Affero General Public\n"
            "License version 3 as published by the Free Software Foundation.\n\n"
@@ -435,6 +435,11 @@ static void open_db() {
     debug(DBG_LOG, "Clearing online_clients...\n");
     if(sylverant_db_query(&conn, "DELETE FROM online_clients")) {
         debug(DBG_ERROR, "Error clearing online_clients\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if(sylverant_db_query(&conn, "DELETE FROM transient_clients")) {
+        debug(DBG_ERROR, "Error clearing transient_clients\n");
         exit(EXIT_FAILURE);
     }
 
