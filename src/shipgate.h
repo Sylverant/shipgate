@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
     Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2018,
-                  2019 Lawrence Sebald
+                  2019, 2020 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -28,7 +28,7 @@
 #include "scripts.h"
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
-#define SHIPGATE_MINIMUM_PROTO_VER 10
+#define SHIPGATE_MINIMUM_PROTO_VER 12
 #define SHIPGATE_MAXIMUM_PROTO_VER 18
 
 #ifdef PACKED
@@ -313,24 +313,12 @@ typedef struct shipgate_block_clients {
     struct {
         uint32_t guildcard;
         uint32_t lobby;
-        char ch_name[32];
-        char lobby_name[32];
-    } entries[0];
-} PACKED shipgate_bclients_pkt;
-
-typedef struct shipgate_block_clients_12 {
-    shipgate_hdr_t hdr;
-    uint32_t count;
-    uint32_t block;
-    struct {
-        uint32_t guildcard;
-        uint32_t lobby;
         uint32_t dlobby;
         uint32_t reserved;
         char ch_name[32];
         char lobby_name[32];
     } entries[0];
-} PACKED shipgate_bclients_12_pkt;
+} PACKED shipgate_bclients_pkt;
 
 /* A kick request, sent to or from a ship */
 typedef struct shipgate_kick_req {

@@ -1719,13 +1719,6 @@ static int handle_cbkup(ship_t *c, shipgate_char_bkup_pkt *pkt) {
     strncpy(name, (const char *)pkt->name, 32);
     name[31] = 0;
 
-    /* Make sure the ship is of a sane version */
-    if(c->proto_ver < 11) {
-        debug(DBG_WARN, "%s sent character backup pkt, but shouldn't have!\n",
-              c->name);
-        return -1;
-    }
-
     /* Is this a restore request or are we saving the character data? */
     if(len == 0) {
         return handle_cbkup_req(c, pkt, gc, name, block);
@@ -2164,6 +2157,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     ICONV_CONST char *inptr;
     char *outptr;
     monster_event_t *ev;
+    const char *tbl_nm = "online_clients";
 
     /* Is the name a Blue Burst-style (UTF-16) name or not? */
     if(pkt->ch_name[0] == '\t') {
@@ -2192,24 +2186,27 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     bl = ntohl(pkt->blocknum);
 
     /* Is this a transient client (that is to say someone on the PC NTE)? */
-    if(gc >= 500 && gc < 600) {
-        /* XXXX */
-        return 0;
-    }
+    if(gc >= 500 && gc < 600)
+        tbl_nm = "transient_clients";
 
     /* Insert the client into the online_clients table */
     sylverant_db_escape_str(&conn, tmp, name, strlen(name));
-    sprintf(query, "INSERT INTO online_clients(guildcard, name, ship_id, "
-            "block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp, c->key_idx, bl);
+    sprintf(query, "INSERT INTO %s(guildcard, name, ship_id, "
+            "block) VALUES('%u', '%s', '%hu', '%u')", tbl_nm, gc, tmp,
+            c->key_idx, bl);
 
     /* If the query fails, most likely its a primary key violation, so assume
        the user is already logged in */
     if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Error adding client to online_clients table: %s\n",
+        debug(DBG_WARN, "Error adding client to %s table: %s\n", tbl_nm,
               sylverant_db_error(&conn));
         return send_error(c, SHDR_TYPE_BLKLOGIN, SHDR_FAILURE,
                           ERR_BLOGIN_ONLINE, (uint8_t *)&pkt->guildcard, 8);
     }
+
+    /* None of the rest of this applies to PC NTE clients at all... */
+    if(gc >= 500 && gc < 600)
+        return 0;
 
     /* Find anyone that has the user in their friendlist so we can send a
        message to them */
@@ -2463,7 +2460,13 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
 
     /* Is this a transient client (that is to say someone on the PC NTE)? */
     if(gc >= 500 && gc < 600) {
-        /* XXXX */
+        /* Delete the client from the transient_clients table */
+        sprintf(query, "DELETE FROM transient_clients WHERE guildcard='%u' AND "
+                "ship_id='%hu'", gc, c->key_idx);
+
+        sylverant_db_query(&conn, query);
+
+        /* There's nothing else to do with PC NTE clients, so skip the rest. */
         return 0;
     }
 
@@ -2531,8 +2534,9 @@ static int handle_friendlist_add(ship_t *c, shipgate_friend_add_pkt *pkt) {
 
     /* Is this a transient client (that is to say someone on the PC NTE)? */
     if((ugc >= 500 && ugc < 600) || (fgc >= 500 && fgc < 600)) {
-        /* XXXX */
-        return 0;
+        /* There's no good way to support this, so respond with an error. */
+        return send_error(c, SHDR_TYPE_ADDFRIEND, SHDR_FAILURE, ERR_BAD_ERROR,
+                          (uint8_t *)&pkt->user_guildcard, 8);
     }
 
     /* Escape the name string */
@@ -2589,6 +2593,7 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     char query[512];
     char tmp[128];
     uint32_t gc, lid;
+    const char *tbl_nm = "online_clients";
 
     /* Make sure the name is terminated properly */
     pkt->lobby_name[31] = 0;
@@ -2597,24 +2602,23 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     gc = ntohl(pkt->guildcard);
     lid = ntohl(pkt->lobby_id);
 
-    /* Is this a transient client (that is to say someone on the PC NTE)? */
-    if(gc >= 500 && gc < 600) {
-        /* XXXX */
-        return 0;
-    }
-
     /* Update the client's entry */
     sylverant_db_escape_str(&conn, tmp, pkt->lobby_name,
                             strlen(pkt->lobby_name));
+
+    /* Is this a transient client (that is to say someone on the PC NTE)? */
+    if(gc >= 500 && gc < 600)
+        tbl_nm = "transient_clients";
+
     if(lid > 20) {
-        sprintf(query, "UPDATE online_clients SET lobby_id='%u', lobby='%s' "
-                "WHERE guildcard='%u' AND ship_id='%hu'", lid, tmp, gc,
+        sprintf(query, "UPDATE %s SET lobby_id='%u', lobby='%s' "
+                "WHERE guildcard='%u' AND ship_id='%hu'", tbl_nm, lid, tmp, gc,
                 c->key_idx);
     }
     else {
-        sprintf(query, "UPDATE online_clients SET lobby_id='%u', lobby='%s', "
-                "dlobby_id='%u' WHERE guildcard='%u' AND ship_id='%hu'", lid,
-                tmp, lid, gc, c->key_idx);
+        sprintf(query, "UPDATE %s SET lobby_id='%u', lobby='%s', "
+                "dlobby_id='%u' WHERE guildcard='%u' AND ship_id='%hu'", tbl_nm,
+                lid, tmp, lid, gc, c->key_idx);
     }
 
     /* This shouldn't ever "fail" so to speak... */
@@ -2627,117 +2631,7 @@ static int handle_lobby_chg(ship_t *c, shipgate_lobby_change_pkt *pkt) {
     return 0;
 }
 
-static int handle_block_clients(ship_t *c, shipgate_bclients_pkt *pkt) {
-    char query[512];
-    char tmp[128], tmp2[128], name[64];
-    uint32_t gc, lid, count, bl, i;
-    uint16_t len;
-    size_t in, out;
-    ICONV_CONST char *inptr;
-    char *outptr;
-
-    /* Verify the length is right */
-    count = ntohl(pkt->count);
-    len = ntohs(pkt->hdr.pkt_len);
-
-    if(len != 16 + count * 72 || count < 1) {
-        debug(DBG_WARN, "Invalid block clients packet received\n");
-        return -1;
-    }
-
-    /* Grab the global stuff */
-    bl = ntohl(pkt->block);
-
-    /* Make sure there's nothing for this ship/block in the db */
-    sprintf(query, "DELETE FROM online_clients WHERE ship_id='%hu' AND "
-            "block='%u'", c->key_idx, bl);
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return -1;
-    }
-
-    sprintf(query, "DELETE FROM transient_clients WHERE ship_id='%hu' AND "
-            "block='%u'", c->key_idx, bl);
-    if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-        return -1;
-    }
-
-    /* Run through each entry */
-    for(i = 0; i < count; ++i) {
-        /* Is the name a Blue Burst-style (UTF-16) name or not? */
-        if(pkt->entries[i].ch_name[0] == '\t') {
-            memset(name, 0, 64);
-            in = 32;
-            out = 64;
-            inptr = pkt->entries[i].ch_name;
-            outptr = name;
-
-            iconv(ic_utf16_to_utf8, &inptr, &in, &outptr, &out);
-        }
-        else {
-            /* Make sure the name is terminated properly */
-            if(pkt->entries[i].ch_name[31] != '\0') {
-                continue;
-            }
-
-            /* The name is ASCII, which is safe to use as UTF-8 */
-            strcpy(name, pkt->entries[i].ch_name);
-        }
-
-        /* Make sure the names look sane */
-        if(pkt->entries[i].lobby_name[31]) {
-            continue;
-        }
-
-        /* Grab the integers out */
-        gc = ntohl(pkt->entries[i].guildcard);
-        lid = ntohl(pkt->entries[i].lobby);
-
-        /* Escape the name string */
-        sylverant_db_escape_str(&conn, tmp, name, strlen(name));
-
-        /* Is this a transient client (that is to say someone on the PC NTE)? */
-        if(gc >= 500 && gc < 600) {
-            /* XXXX */
-            continue;
-        }
-
-        /* If we're not in a lobby, that's all we need */
-        if(lid == 0) {
-            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
-                    "ship_id, block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp,
-                    c->key_idx, bl);
-        }
-        else if(lid <= 20) {
-            sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
-                                    strlen(pkt->entries[i].lobby_name));
-            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
-                    "ship_id, block, lobby_id, lobby, dlobby_id) VALUES('%u', "
-                    "'%s', '%hu', '%u', '%u', '%s', '%u')", gc, tmp, c->key_idx,
-                    bl, lid, tmp2, lid);
-        }
-        else {
-            sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
-                                    strlen(pkt->entries[i].lobby_name));
-            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
-                    "ship_id, block, lobby_id, lobby, dlobby_id) VALUES('%u', "
-                    "'%s', '%hu', '%u', '%u', '%s', '1')", gc, tmp, c->key_idx,
-                    bl, lid, tmp2);
-        }
-
-        /* Run the query */
-        if(sylverant_db_query(&conn, query)) {
-            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-            continue;
-        }
-    }
-
-    /* We're done (no need to tell the ship on success) */
-    return 0;
-}
-
-static int handle_clients12(ship_t *c, shipgate_bclients_12_pkt *pkt) {
+static int handle_clients(ship_t *c, shipgate_bclients_pkt *pkt) {
     char query[512];
     char tmp[128], tmp2[128], name[64];
     uint32_t gc, lid, dlid, count, bl, i;
@@ -2745,6 +2639,7 @@ static int handle_clients12(ship_t *c, shipgate_bclients_12_pkt *pkt) {
     size_t in, out;
     ICONV_CONST char *inptr;
     char *outptr;
+    const char *tbl_nm;
 
     /* Verify the length is right */
     count = ntohl(pkt->count);
@@ -2806,27 +2701,27 @@ static int handle_clients12(ship_t *c, shipgate_bclients_12_pkt *pkt) {
         dlid = ntohl(pkt->entries[i].dlobby);
 
         /* Is this a transient client (that is to say someone on the PC NTE)? */
-        if(gc >= 500 && gc < 600) {
-            /* XXXX */
-            continue;
-        }
+        if(gc >= 500 && gc < 600)
+            tbl_nm = "transient_clients";
+        else
+            tbl_nm = "online_clients";
 
         /* Escape the name string */
         sylverant_db_escape_str(&conn, tmp, name, strlen(name));
 
         /* If we're not in a lobby, that's all we need */
         if(lid == 0) {
-            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
-                    "ship_id, block) VALUES('%u', '%s', '%hu', '%u')", gc, tmp,
-                    c->key_idx, bl);
+            sprintf(query, "INSERT INTO %s(guildcard, name, "
+                    "ship_id, block) VALUES('%u', '%s', '%hu', '%u')", tbl_nm,
+                    gc, tmp, c->key_idx, bl);
         }
         else {
             sylverant_db_escape_str(&conn, tmp2, pkt->entries[i].lobby_name,
                                     strlen(pkt->entries[i].lobby_name));
-            sprintf(query, "INSERT INTO online_clients(guildcard, name, "
+            sprintf(query, "INSERT INTO %s(guildcard, name, "
                     "ship_id, block, lobby_id, lobby, dlobby_id) VALUES('%u', "
-                    "'%s', '%hu', '%u', '%u', '%s', '%u')", gc, tmp, c->key_idx,
-                    bl, lid, tmp2, dlid);
+                    "'%s', '%hu', '%u', '%u', '%s', '%u')", tbl_nm, gc, tmp,
+                    c->key_idx, bl, lid, tmp2, dlid);
         }
 
         /* Run the query */
@@ -3718,10 +3613,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_lobby_chg(c, (shipgate_lobby_change_pkt *)pkt);
 
         case SHDR_TYPE_BCLIENTS:
-            if(c->proto_ver < 12)
-                return handle_block_clients(c, (shipgate_bclients_pkt *)pkt);
-            else
-                return handle_clients12(c, (shipgate_bclients_12_pkt *)pkt);
+            return handle_clients(c, (shipgate_bclients_pkt *)pkt);
 
         case SHDR_TYPE_KICK:
             return handle_kick(c, (shipgate_kick_pkt *)pkt);
