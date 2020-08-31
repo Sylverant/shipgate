@@ -168,6 +168,7 @@ static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver,
 }
 
 static ship_script_t *find_script(const char *fn, int module) {
+#ifdef ENABLE_LUA
     uint32_t i;
 
     /* Go through the list looking for a match. */
@@ -176,6 +177,10 @@ static ship_script_t *find_script(const char *fn, int module) {
            !strcmp(scripts[i].remote_fn, fn))
             return scripts + i;
     }
+#else
+    (void)fn;
+    (void)module;
+#endif
 
     return NULL;
 }
