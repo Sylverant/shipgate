@@ -3442,42 +3442,42 @@ static int handle_sdata(ship_t *s, shipgate_sdata_pkt *pkt) {
 
 static int handle_qflag_set(ship_t *c, shipgate_qflag_pkt *pkt) {
     char query[1024];
-    uint32_t gc, block, flag_id, value, qid;
-    void *result;
-    char **row;
+    uint32_t gc, block, flag_id, value, qid, ctl;
 
     /* Parse out the packet data */
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
     flag_id = ntohl(pkt->flag_id);
+    ctl = flag_id & 0xFFFF0000;
+    flag_id = (flag_id & 0x0000FFFF) | (ntohs(pkt->flag_id_hi) << 16);
     qid = ntohl(pkt->quest_id);
     value = ntohl(pkt->value);
 
     /* Build the db query */
-    if(!(flag_id & QFLAG_DELETE_FLAG)) {
-        if(!(flag_id & QFLAG_LONG_FLAG)) {
+    if(!(ctl & QFLAG_DELETE_FLAG)) {
+        if(!(ctl & QFLAG_LONG_FLAG)) {
             sprintf(query, "INSERT INTO quest_flags_short (guildcard, flag_id, "
                     " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32
                     "') ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
-                    flag_id & 0x00FFFFFF, value & 0xFFFF);
+                    flag_id, value & 0xFFFF);
         }
         else {
             sprintf(query, "INSERT INTO quest_flags_long (guildcard, flag_id, "
                     " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32
                     "') ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
-                    flag_id & 0x00FFFFFF, value);
+                    flag_id, value);
         }
     }
     else {
-        if(!(flag_id & QFLAG_LONG_FLAG)) {
+        if(!(ctl & QFLAG_LONG_FLAG)) {
             sprintf(query, "DELETE FROM quest_flags_short WHERE guildcard='%"
                     PRIu32 "' AND flag_id='%" PRIu32 "'", gc,
-                    flag_id & 0x00FFFFFF);
+                    flag_id);
         }
         else {
             sprintf(query, "DELETE FROM quest_flags_long WHERE guildcard='%"
                     PRIu32 "' AND flag_id='%" PRIu32 "'", gc,
-                    flag_id & 0x00FFFFFF);
+                    flag_id);
         }
     }
 
@@ -3489,12 +3489,12 @@ static int handle_qflag_set(ship_t *c, shipgate_qflag_pkt *pkt) {
     }
 
     return send_qflag(c, SHDR_TYPE_QFLAG_SET, gc, block, flag_id, qid,
-                      value);
+                      value, ctl);
 }
 
 static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     char query[1024];
-    uint32_t gc, block, flag_id, value, qid;
+    uint32_t gc, block, flag_id, value, qid, ctl;
     void *result;
     char **row;
 
@@ -3502,10 +3502,12 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
     flag_id = ntohl(pkt->flag_id);
+    ctl = flag_id & 0xFFFF0000;
+    flag_id = (flag_id & 0x0000FFFF) | (ntohs(pkt->flag_id_hi) << 16);
     qid = ntohl(pkt->quest_id);
 
     /* Make sure the packet is sane... */
-    if((flag_id & QFLAG_DELETE_FLAG)) {
+    if((ctl & QFLAG_DELETE_FLAG)) {
         debug(DBG_WARN, "Ship sent delete flag bit on get flag packet!"
               "Dropping request.\n");
         return send_error(c, SHDR_TYPE_QFLAG_GET, SHDR_FAILURE,
@@ -3513,13 +3515,13 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     }
 
     /* Build the db query */
-    if(!(flag_id & QFLAG_LONG_FLAG)) {
+    if(!(ctl & QFLAG_LONG_FLAG)) {
         sprintf(query, "SELECT value FROM quest_flags_short WHERE guildcard='%"
-                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x00FFFFFF);
+                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id);
     }
     else {
         sprintf(query, "SELECT value FROM quest_flags_long WHERE guildcard='%"
-                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x00FFFFFF);
+                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id);
     }
 
     /* Execute the query */
@@ -3547,7 +3549,7 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     sylverant_db_result_free(result);
 
     return send_qflag(c, SHDR_TYPE_QFLAG_GET, gc, block, flag_id, qid,
-                      value);
+                      value, ctl);
 }
 
 /* Process one ship packet. */
