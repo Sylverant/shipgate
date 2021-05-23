@@ -413,7 +413,10 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     uint16_t menu_code = ntohs(pkt->menu_code);
     int ship_number;
     uint64_t ip6_hi, ip6_lo;
-    uint32_t clients = 0, i;
+    uint32_t clients = 0;
+#ifdef ENABLE_LUA
+    uint32_t i;
+#endif
 
     /* Check the protocol version for support (TLS first supported in v10) */
     if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
@@ -1083,7 +1086,7 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     char **row;
     uint16_t ship_id, port;
     uint32_t lobby_id, ip, block, dlobby_id;
-    uint64_t ip6_hi, ip6_lo;
+    /* uint64_t ip6_hi, ip6_lo; */
     ship_t *s;
     bb_guild_reply_pkt reply;
     size_t in, out;
@@ -1146,8 +1149,11 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     block = (uint32_t)strtoul(row[2], NULL, 0);
     lobby_id = (uint32_t)strtoul(row[4], NULL, 0);
     ip = (uint32_t)strtoul(row[6], NULL, 0);
+    /* Not supported yet.... */
+    /*
     ip6_hi = (uint64_t)strtoull(row[9], NULL, 0);
     ip6_lo = (uint64_t)strtoull(row[10], NULL, 0);
+    */
     dlobby_id = (uint32_t)strtoul(row[11], NULL, 0);
 
     if(errno) {
