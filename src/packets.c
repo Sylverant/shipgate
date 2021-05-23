@@ -566,6 +566,7 @@ int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
 int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
                      const char *name, const char *msg) {
     dc_simple_mail_pkt pkt;
+    size_t amt = strlen(name);
 
     /* Set up the mail. */
     memset(&pkt, 0, sizeof(pkt));
@@ -573,7 +574,17 @@ int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
     pkt.hdr.pkt_len = LE16(DC_SIMPLE_MAIL_LENGTH);
     pkt.tag = LE32(0x00010000);
     pkt.gc_sender = LE32(sender);
-    strncpy(pkt.name, name, 16);
+
+    /* Thank you GCC for this completely unnecessary warning that means I have
+       to do this stupid song and dance to get rid of it (or tag the variable
+       being used with a GCC-specific attribute) Basically, strncpy is totally
+       useless now when you're dealing with things that need not be
+       terminated. */
+    if(amt > 16)
+        amt = 16;
+
+    memcpy(pkt.name, name, amt);
+
     pkt.gc_dest = LE32(gc);
     strncpy(pkt.stuff, msg, 0x90);
 
