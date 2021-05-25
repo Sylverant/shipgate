@@ -2158,7 +2158,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     char query[512];
     char name[64];
     char tmp[128];
-    uint32_t gc, bl, gc2, bl2, opt;
+    uint32_t gc, bl, gc2, bl2, opt, acc = 0;
     uint16_t ship_id;
     ship_t *c2;
     void *result;
@@ -2317,14 +2317,14 @@ skip_opts:
     if(!(row = sylverant_db_result_fetch(result)) || !row[0])
         goto skip_mail;
 
-    gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+    acc = (uint32_t)strtoul(row[0], NULL, 0);
     sylverant_db_result_free(result);
 
     /* See whether the user has any saved mail. */
     sprintf(query, "SELECT COUNT(*) FROM simple_mail INNER JOIN guildcards ON "
             "simple_mail.recipient = guildcards.guildcard WHERE "
             "guildcards.account_id='%" PRIu32 "' AND simple_mail.status='0'",
-            gc2);
+            acc);
 
     /* Query for any results */
     if(sylverant_db_query(&conn, query)) {
@@ -2367,7 +2367,7 @@ skip_opts:
     sprintf(query, "UPDATE simple_mail INNER JOIN guildcards ON "
             "simple_mail.recipient = guildcards.guildcard SET "
             "simple_mail.status='2' WHERE guildcards.account_id='%" PRIu32
-            "' AND simple_mail.status='0'", gc2);
+            "' AND simple_mail.status='0'", acc);
 
     /* Do the update. */
     if(sylverant_db_query(&conn, query)) {
@@ -2383,28 +2383,24 @@ skip_mail:
        TODO: Figure out a better way of searching, since this limits us to one
              ongoing event at a time... */
     if(!(ev = find_current_event(0, 0, 1)))
-        return 0;
+        goto skip_event;
 
     /* See if they're disqualified (and haven't been notified). */
     sprintf(query, "SELECT account_id FROM monster_event_disq WHERE "
             "account_id='%" PRIu32 "' AND event_id='%" PRIu32 "' AND flags='0'",
-            gc, ev->event_id);
+            acc, ev->event_id);
 
     if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", acc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-
-        /* Meh. */
-        return 0;
+        goto skip_event;
     }
 
     /* Grab any data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
-        debug(DBG_WARN, "Couldn't store disqualification (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "Couldn't store disqualification (%" PRIu32 ")\n", acc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-
-        /* Meh. */
-        return 0;
+        goto skip_event;
     }
 
     /* If there's a result row, then they're disqualified... */
@@ -2415,7 +2411,7 @@ skip_mail:
 
         sprintf(query, "UPDATE monster_event_disq SET flags='1' WHERE "
                 "event_id='%" PRIu32 "' AND account_id='%" PRIu32 "'",
-                ev->event_id, gc);
+                ev->event_id, acc);
 
         /* Do the update. */
         if(sylverant_db_query(&conn, query)) {
@@ -2429,6 +2425,44 @@ skip_mail:
        far, then we should be good to go... */
     sylverant_db_result_free(result);
 
+skip_event:
+    /* Skip the client's blocklist if the ship is running earlier than protocol
+       version 19. */
+    if(c->proto_ver < 19)
+        goto skip_bl;
+
+    /* See if they've got anyone on their list */
+    sprintf(query, "SELECT blocked_gc, flags FROM user_blocklist WHERE "
+            "account_id='%" PRIu32 "'", acc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query for blocklist (%" PRIu32 ")\n", acc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_bl;
+    }
+
+    /* Grab any data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't store blocklist (%" PRIu32 ")\n", acc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_bl;
+    }
+
+    /* Put together the blocklist packet */
+    user_blocklist_begin(gc, bl);
+
+    while((row = sylverant_db_result_fetch(result))) {
+        gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+        bl2 = (uint32_t)strtoul(row[1], NULL, 0);
+        user_blocklist_append(gc2, bl2);
+    }
+
+    sylverant_db_result_free(result);
+
+    /* We're done, send it */
+    send_user_blocklist(c);
+
+skip_bl:
     /* We're done (no need to tell the ship on success) */
     return 0;
 }
