@@ -790,3 +790,101 @@ int send_qflag(ship_t *c, uint16_t type, uint32_t gc, uint32_t block,
     /* Send it away. */
     return send_crypt(c, sizeof(shipgate_qflag_pkt));
 }
+
+/* Send a simple ship control request */
+int send_sctl(ship_t *c, uint32_t ctl, uint32_t acc) {
+    shipgate_shipctl_pkt *pkt = (shipgate_shipctl_pkt *)sendbuf;
+
+    /* This packet doesn't exist until protocol 19. */
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Fill in the packet... */
+    memset(pkt, 0, sizeof(shipgate_shipctl_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_shipctl_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SHIP_CTL);
+
+    pkt->ctl = htonl(ctl);
+    pkt->acc = htonl(acc);
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_shipctl_pkt));
+}
+
+/* Send a shutdown/restart request */
+int send_shutdown(ship_t *c, int restart, uint32_t acc, uint32_t when) {
+    shipgate_sctl_shutdown_pkt *pkt = (shipgate_sctl_shutdown_pkt *)sendbuf;
+
+    /* This packet doesn't exist until protocol 19. */
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Fill in the packet... */
+    memset(pkt, 0, sizeof(shipgate_sctl_shutdown_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_sctl_shutdown_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SHIP_CTL);
+
+    if(restart)
+        pkt->ctl = htonl(SCTL_TYPE_RESTART);
+    else
+        pkt->ctl = htonl(SCTL_TYPE_SHUTDOWN);
+
+    pkt->acc = htonl(acc);
+    pkt->when = htonl(when);
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_sctl_shutdown_pkt));
+}
+
+/* Begin an blocklist packet */
+void user_blocklist_begin(uint32_t guildcard, uint32_t block) {
+    shipgate_user_blocklist_pkt *pkt = (shipgate_user_blocklist_pkt *)sendbuf;
+
+    /* Fill in the packet */
+    pkt->hdr.pkt_len = sizeof(shipgate_user_blocklist_pkt);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_UBLOCKS);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
+
+    pkt->guildcard = htonl(guildcard);
+    pkt->block = htonl(block);
+    pkt->count = 0;
+    pkt->reserved = 0;
+}
+
+/* Append a value to the blocklist packet */
+void user_blocklist_append(uint32_t gc, uint32_t flags) {
+    shipgate_user_blocklist_pkt *pkt = (shipgate_user_blocklist_pkt *)sendbuf;
+    uint32_t i = pkt->count;
+
+    /* Add the blocked user */
+    pkt->entries[i].gc = htonl(gc);
+    pkt->entries[i].flags = htonl(flags);
+
+    /* Adjust the packet's information to account for the new option */
+    pkt->hdr.pkt_len += 8;
+    ++pkt->count;
+}
+
+/* Finish off a user blocklist packet and send it along */
+int send_user_blocklist(ship_t *c) {
+    shipgate_user_blocklist_pkt *pkt = (shipgate_user_blocklist_pkt *)sendbuf;
+    uint16_t len = pkt->hdr.pkt_len;
+
+    /* Make sure we have something to send, at least */
+    if(!pkt->count)
+        return 0;
+
+    /* Make sure we don't try to send to a ship that won't know what to do with
+       the packet. */
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Swap that which we need to do */
+    pkt->hdr.pkt_len = htons(len);
+    pkt->count = htonl(pkt->count);
+
+    /* Send it away */
+    return send_crypt(c, len);
+}

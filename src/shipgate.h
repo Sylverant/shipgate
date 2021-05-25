@@ -29,7 +29,7 @@
 
 /* Minimum and maximum supported protocol ship<->shipgate protocol versions */
 #define SHIPGATE_MINIMUM_PROTO_VER 12
-#define SHIPGATE_MAXIMUM_PROTO_VER 18
+#define SHIPGATE_MAXIMUM_PROTO_VER 19
 
 #ifdef PACKED
 #undef PACKED
@@ -96,24 +96,6 @@ typedef struct shipgate_login {
     uint8_t ship_nonce[4];
 } PACKED shipgate_login_pkt;
 
-/* The reply to the login request from the shipgate. This form is deprecated,
-   and not valid in shipgate protocol v7. New ships should use the other form
-   (type 0x0025) instead of this one (type 0x0010). */
-typedef struct shipgate_login_reply {
-    shipgate_hdr_t hdr;
-    char name[12];
-    uint32_t ship_addr;
-    uint32_t int_addr;                  /* reserved for compatibility */
-    uint16_t ship_port;
-    uint16_t ship_key;
-    uint16_t clients;
-    uint16_t games;
-    uint32_t flags;
-    uint16_t menu_code;
-    uint8_t reserved[2];
-    uint32_t proto_ver;
-} PACKED shipgate_login_reply_pkt;
-
 /* The reply to the login request from the shipgate (with IPv6 support).
    Note that IPv4 support is still required, as PSO itself does not actually
    support IPv6 (however, proxies can alleviate this problem a bit). */
@@ -142,14 +124,6 @@ typedef struct shipgate_cnt {
 } PACKED shipgate_cnt_pkt;
 
 /* A forwarded player packet. */
-typedef struct shipgate_fw {
-    shipgate_hdr_t hdr;
-    uint32_t ship_id;
-    uint32_t fw_flags;
-    uint8_t pkt[0];
-} PACKED shipgate_fw_pkt;
-
-/* A forwarded player packet (updated in proto v9). */
 typedef struct shipgate_fw_9 {
     shipgate_hdr_t hdr;
     uint32_t ship_id;
@@ -449,6 +423,85 @@ typedef struct shipgate_qflag {
     uint32_t value;
 } PACKED shipgate_qflag_pkt;
 
+/* Packet used for ship control. */
+typedef struct shipgate_shipctl {
+    shipgate_hdr_t hdr;
+    uint32_t ctl;
+    uint32_t acc;
+    uint32_t reserved1;
+    uint32_t reserved2;
+    uint8_t data[];
+} PACKED shipgate_shipctl_pkt;
+
+/* Packet used to shutdown or restart a ship. */
+typedef struct shipgate_sctl_shutdown {
+    shipgate_hdr_t hdr;
+    uint32_t ctl;
+    uint32_t acc;
+    uint32_t reserved1;
+    uint32_t reserved2;
+    uint32_t when;
+    uint32_t reserved3;
+} PACKED shipgate_sctl_shutdown_pkt;
+
+/* Packet used to communicate system information from a ship. */
+typedef struct shipgate_sctl_uname_reply {
+    shipgate_hdr_t hdr;
+    uint32_t ctl;
+    uint32_t unused;
+    uint32_t reserved1;
+    uint32_t reserved2;
+    uint16_t namelen;
+    uint16_t nodelen;
+    uint16_t rellen;
+    uint16_t verlen;
+    uint16_t machlen;
+    uint16_t reserved3;
+    uint32_t reserved4;
+    uint8_t data[];
+} PACKED shipgate_sctl_uname_reply_pkt;
+
+/* Packet used to communicate fine-grained version information from a ship. */
+typedef struct shipgate_sctl_ver_reply {
+    shipgate_hdr_t hdr;
+    uint32_t ctl;
+    uint32_t unused;
+    uint32_t reserved1;
+    uint32_t reserved2;
+    uint8_t ver_major;
+    uint8_t ver_minor;
+    uint8_t ver_micro;
+    uint8_t flags;
+    uint8_t commithash[20];
+    uint64_t committime;
+    uint8_t remoteref[];
+} PACKED shipgate_sctl_ver_reply_pkt;
+
+/* Packet used to send a user's blocklist to the ship */
+typedef struct shipgate_user_blocklist {
+    shipgate_hdr_t hdr;
+    uint32_t guildcard;
+    uint32_t block;
+    uint32_t count;
+    uint32_t reserved;
+    struct {
+        uint32_t gc;
+        uint32_t flags;
+    } entries[];
+} PACKED shipgate_user_blocklist_pkt;
+
+/* Packet used to add a player to a user's blocklist */
+typedef struct shipgate_ubl_add {
+    shipgate_hdr_t hdr;
+    uint32_t requester;
+    uint32_t block;
+    uint32_t blocked_player;
+    uint32_t flags;
+    uint8_t blocked_name[32];
+    uint8_t blocked_class;
+    uint8_t reserved[7];
+} PACKED shipgate_ubl_add_pkt;
+
 #undef PACKED
 
 /* The requisite message for the msg field of the shipgate_login_pkt. */
@@ -465,7 +518,9 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_PC        0x0003      /* A decrypted PCv2 game packet */
 #define SHDR_TYPE_GC        0x0004      /* A decrypted Gamecube game packet */
 #define SHDR_TYPE_EP3       0x0005      /* A decrypted Episode 3 packet */
-#define SHDR_TYPE_LOGIN     0x0010      /* A login request (deprecated) */
+#define SHDR_TYPE_XBOX      0x0006      /* A decrypted Xbox game packet */
+/* 0x0007 - 0x000F reserved */
+#define SHDR_TYPE_LOGIN     0x0010      /* Shipgate hello packet */
 #define SHDR_TYPE_COUNT     0x0011      /* A Client/Game Count update */
 #define SHDR_TYPE_SSTATUS   0x0012      /* A Ship has come up or gone down */
 #define SHDR_TYPE_PING      0x0013      /* A Ping packet, enough said */
@@ -497,6 +552,9 @@ static const char shipgate_login_msg[] =
 #define SHDR_TYPE_SSET      0x002D      /* Script set */
 #define SHDR_TYPE_QFLAG_SET 0x002E      /* Set quest flag */
 #define SHDR_TYPE_QFLAG_GET 0x002F      /* Read quest flag */
+#define SHDR_TYPE_SHIP_CTL  0x0030      /* Ship control packet */
+#define SHDR_TYPE_UBLOCKS   0x0031      /* User blocklist */
+#define SHDR_TYPE_UBL_ADD   0x0032      /* User blocklist add */
 
 /* Flags that can be set in the login packet */
 #define LOGIN_FLAG_GMONLY   0x00000001  /* Only Global GMs are allowed */
@@ -507,7 +565,9 @@ static const char shipgate_login_msg[] =
 #define LOGIN_FLAG_NOEP12   0x00000080  /* Do not allow PSO Ep1&2 clients */
 #define LOGIN_FLAG_NOEP3    0x00000100  /* Do not allow PSO Ep3 clients */
 #define LOGIN_FLAG_NOBB     0x00000200  /* Do not allow PSOBB clients */
-/* 0x00000400 - 0x00010000 reserved. */
+#define LOGIN_FLAG_NODCNTE  0x00000400  /* Do not allow DC NTE clients */
+#define LOGIN_FLAG_NOXBOX   0x00000800  /* Do not allow Xbox clients */
+/* 0x00010000 reserved. */
 #define LOGIN_FLAG_LUA      0x00020000  /* Ship supports Lua scripting */
 #define LOGIN_FLAG_32BIT    0x00040000  /* Ship is running on a 32-bit cpu */
 #define LOGIN_FLAG_BE       0x00080000  /* Ship is big endian */
@@ -541,6 +601,9 @@ static const char shipgate_login_msg[] =
 /* Error codes in response to a block login */
 #define ERR_BLOGIN_INVAL_NAME   0x00000001
 #define ERR_BLOGIN_ONLINE       0x00000002
+
+/* Error codes in response to a ship control */
+#define ERR_SCTL_UNKNOWN_CTL    0x00000001
 
 /* Possible values for user options */
 #define USER_OPT_QUEST_LANG     0x00000001
@@ -583,6 +646,12 @@ static const char shipgate_login_msg[] =
 /* OR these into the flag_id for qflags to modify how the packets work... */
 #define QFLAG_LONG_FLAG         0x80000000
 #define QFLAG_DELETE_FLAG       0x40000000  /* Only valid on a set */
+
+/* Ship control types. */
+#define SCTL_TYPE_UNAME         0x00000001
+#define SCTL_TYPE_VERSION       0x00000002
+#define SCTL_TYPE_RESTART       0x00000003
+#define SCTL_TYPE_SHUTDOWN      0x00000004
 
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
@@ -672,5 +741,20 @@ int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
 /* Send a quest flag response */
 int send_qflag(ship_t *c, uint16_t type, uint32_t gc, uint32_t block,
                uint32_t fid, uint32_t qid, uint32_t value, uint32_t ctl);
+
+/* Send a simple ship control request */
+int send_sctl(ship_t *c, uint32_t ctl, uint32_t acc);
+
+/* Send a shutdown/restart request */
+int send_shutdown(ship_t *c, int restart, uint32_t acc, uint32_t when);
+
+/* Begin a blocklist packet */
+void user_blocklist_begin(uint32_t guildcard, uint32_t block);
+
+/* Append a value to the blocklist packet */
+void user_blocklist_append(uint32_t gc, uint32_t flags);
+
+/* Finish off a user blocklist packet and send it along */
+int send_user_blocklist(ship_t *c);
 
 #endif /* !SHIPGATE_H */

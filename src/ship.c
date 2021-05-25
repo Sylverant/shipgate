@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
     Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018,
-                  2019, 2020 Lawrence Sebald
+                  2019, 2020, 2021 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -55,6 +55,7 @@
 #define VERSION_GC              2
 #define VERSION_EP3             3
 #define VERSION_BB              4
+#define VERSION_XBOX            5
 
 /* Database connection */
 extern sylverant_dbconn_t conn;
