@@ -186,6 +186,44 @@ static ship_script_t *find_script(const char *fn, int module) {
     return NULL;
 }
 
+/* Returns non-zero if the specified access should be blocked */
+static int check_user_blocklist(uint32_t searcher, uint32_t guildcard,
+                                uint32_t flags) {
+    char query[128];
+    uint32_t read_flags;
+    int rv = 0;
+    void *result;
+    char **row;
+
+    sprintf(query, "SELECT flags FROM user_blocklist NATURAL JOIN guildcards "
+            "WHERE user_blocklist.blocked_gc='%u' AND guildcard='%u'", searcher,
+            guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Blocklist Error: %s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch blocklist result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if((row = sylverant_db_result_fetch(result))) {
+        /* There's a hit on the blocklist, check if they're blocking search. */
+        errno = 0;
+        read_flags = (uint32_t)strtoul(row[0], NULL, 0);
+
+        if(!errno && (read_flags & flags) == flags)
+            rv = 1;
+    }
+
+    /* Clean up and return what we got */
+    sylverant_db_result_free(result);
+    return rv;
+}
+
 /* Create a new connection, storing it in the list of ships. */
 ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     ship_t *rv;
@@ -728,11 +766,16 @@ static int save_mail(uint32_t gc, uint32_t from, void *pkt, int version) {
 
 static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
+    uint32_t sender = LE32(pkt->gc_sender);
     char query[256];
     void *result;
     char **row;
     uint16_t ship_id;
     ship_t *s;
+
+    /* See if the client being sent the mail has blocked the user sending it */
+    if(check_user_blocklist(sender, guildcard, BLOCKLIST_MAIL))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
@@ -752,7 +795,7 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     if(!(row = sylverant_db_result_fetch(result))) {
         /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_DC);
+        return save_mail(guildcard, sender, pkt, VERSION_DC);
     }
 
     /* Grab the data from the result */
@@ -779,11 +822,16 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
 
 static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
+    uint32_t sender = LE32(pkt->gc_sender);
     char query[256];
     void *result;
     char **row;
     uint16_t ship_id;
     ship_t *s;
+
+    /* See if the client being sent the mail has blocked the user sending it */
+    if(check_user_blocklist(sender, guildcard, BLOCKLIST_MAIL))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
@@ -803,7 +851,7 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     if(!(row = sylverant_db_result_fetch(result))) {
         /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_PC);
+        return save_mail(guildcard, sender, pkt, VERSION_PC);
     }
 
     /* Grab the data from the result */
@@ -830,11 +878,16 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
 
 static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
+    uint32_t sender = LE32(pkt->gc_sender);
     char query[256];
     void *result;
     char **row;
     uint16_t ship_id;
     ship_t *s;
+
+    /* See if the client being sent the mail has blocked the user sending it */
+    if(check_user_blocklist(sender, guildcard, BLOCKLIST_MAIL))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
@@ -854,7 +907,7 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     if(!(row = sylverant_db_result_fetch(result))) {
         /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_BB);
+        return save_mail(guildcard, sender, pkt, VERSION_BB);
     }
 
     /* Grab the data from the result */
@@ -882,6 +935,7 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
 static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
                                uint32_t flags) {
     uint32_t guildcard = LE32(pkt->gc_target);
+    uint32_t searcher = LE32(pkt->gc_search);
     char query[512];
     void *result;
     char **row;
@@ -892,6 +946,11 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
     dc_guild_reply_pkt reply;
     dc_guild_reply6_pkt reply6;
     char lobby_name[32], gname[17];
+
+    /* See if the client being searched for has blocked the one doing the
+       searching... */
+    if(check_user_blocklist(searcher, guildcard, BLOCKLIST_GSEARCH))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
@@ -1094,6 +1153,11 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     ICONV_CONST char *inptr;
     char *outptr;
     char lobby_name[32], gname[17];
+
+    /* See if the client being searched for has blocked the one doing the
+       searching... */
+    if(check_user_blocklist(gc_sender, guildcard, BLOCKLIST_GSEARCH))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
@@ -2244,6 +2308,10 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* For each bite we get, send out a friend login packet */
     while((row = sylverant_db_result_fetch(result))) {
         gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+
+        if(check_user_blocklist(gc2, gc, BLOCKLIST_FLIST))
+            continue;
+
         bl2 = (uint32_t)strtoul(row[1], NULL, 0);
         ship_id = (uint16_t)strtoul(row[2], NULL, 0);
         c2 = find_ship(ship_id);
@@ -2548,6 +2616,10 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* For each bite we get, send out a friend logout packet */
     while((row = sylverant_db_result_fetch(result))) {
         gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+
+        if(check_user_blocklist(gc2, gc, BLOCKLIST_FLIST))
+            continue;
+
         bl2 = (uint32_t)strtoul(row[1], NULL, 0);
         ship_id = (uint16_t)strtoul(row[2], NULL, 0);
         c2 = find_ship(ship_id);
@@ -2907,7 +2979,7 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
 }
 
 static int handle_frlist_req(ship_t *c, shipgate_friend_list_req *pkt) {
-    uint32_t gcr, block, start;
+    uint32_t gcr, gcf, block, start;
     char query[256];
     void *result;
     char **row;
@@ -2940,20 +3012,28 @@ static int handle_frlist_req(ship_t *c, shipgate_friend_list_req *pkt) {
 
     /* Fetch our max of 5 entries... i will be left as the number found */
     for(i = 0; i < 5 && (row = sylverant_db_result_fetch(result)); ++i) {
-        entries[i].guildcard = htonl(strtoul(row[0], NULL, 0));
+        gcf = (uint32_t)strtoul(row[0], NULL, 0);
+        entries[i].guildcard = htonl(gcf);
 
-        if(row[2]) {
-            entries[i].ship = htonl(strtoul(row[2], NULL, 0));
-        }
-        else {
+        /* Make sure the user isn't blocked from seeing this person. */
+        if(check_user_blocklist(gcr, gcf, BLOCKLIST_FLIST)) {
             entries[i].ship = 0;
-        }
-
-        if(row[3]) {
-            entries[i].block = htonl(strtoul(row[3], NULL, 0));
+            entries[i].block = 0;
         }
         else {
-            entries[i].block = 0;
+            if(row[2]) {
+                entries[i].ship = htonl(strtoul(row[2], NULL, 0));
+            }
+            else {
+                entries[i].ship = 0;
+            }
+
+            if(row[3]) {
+                entries[i].block = htonl(strtoul(row[3], NULL, 0));
+            }
+            else {
+                entries[i].block = 0;
+            }
         }
 
         entries[i].reserved = 0;

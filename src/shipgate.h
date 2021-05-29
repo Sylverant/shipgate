@@ -653,6 +653,16 @@ static const char shipgate_login_msg[] =
 #define SCTL_TYPE_RESTART       0x00000003
 #define SCTL_TYPE_SHUTDOWN      0x00000004
 
+/* Things that can be blocked on the user blocklist */
+#define BLOCKLIST_CHAT          0x00000001  /* Lobby chat and word select */
+#define BLOCKLIST_SCHAT         0x00000002  /* Lobby symbol chat */
+#define BLOCKLIST_MAIL          0x00000004  /* Simple mail */
+#define BLOCKLIST_GSEARCH       0x00000008  /* Guild card search */
+#define BLOCKLIST_FLIST         0x00000010  /* Friend list status */
+#define BLOCKLIST_CSEARCH       0x00000020  /* Choice search */
+#define BLOCKLIST_IGCHAT        0x00000040  /* Game chat and word select */
+#define BLOCKLIST_IGSCHAT       0x00000080  /* Game symbol chat */
+
 /* Send a welcome packet to the given ship. */
 int send_welcome(ship_t *c);
 
