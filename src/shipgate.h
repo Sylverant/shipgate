@@ -85,6 +85,15 @@ typedef struct shipgate_schunk_err {
     char filename[32];
 } PACKED shipgate_schunk_err_pkt;
 
+/* Error packet in reply to a ship control packet */
+typedef struct shipgate_sctl_err {
+    shipgate_error_pkt base;
+    uint32_t ctl;
+    uint32_t acc;
+    uint32_t reserved1;
+    uint32_t reserved2;
+} PACKED shipgate_sctl_err_pkt;
+
 /* The request sent from the shipgate for a ship to identify itself. */
 typedef struct shipgate_login {
     shipgate_hdr_t hdr;
