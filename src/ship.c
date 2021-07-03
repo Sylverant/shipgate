@@ -3673,6 +3673,78 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
                       value, ctl);
 }
 
+static int handle_ubl_add(ship_t *c, shipgate_ubl_add_pkt *pkt) {
+    char query[1024];
+    char name[65];
+    uint32_t gc, block, blocked, flags, acc;
+    void *result;
+    char **row;
+
+    /* Parse out the packet data */
+    gc = ntohl(pkt->requester);
+    block = ntohl(pkt->block);
+    blocked = ntohl(pkt->blocked_player);
+    flags = ntohl(pkt->flags);
+
+    /* See if the user has an account or not. */
+    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%"
+            PRIu32 "'", gc);
+
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot query for account data for gc %" PRIu32
+              ": %s\n", gc, sylverant_db_error(&conn));
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        debug(DBG_WARN, "No result rows for guild card %" PRIu32 "\n", gc);
+        sylverant_db_result_free(result);
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    /* If their account id in the table is NULL, then bail... */
+    if(!row[0]) {
+        sylverant_db_result_free(result);
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_REQ_LOGIN, gc, block,
+                               NULL);
+    }
+
+    /* We've verified they've got an account, continue on. */
+    acc = atoi(row[0]);
+    sylverant_db_result_free(result);
+
+    sylverant_db_escape_str(&conn, name, (const char *)pkt->blocked_name,
+                            strlen((const char *)pkt->blocked_name));
+
+    sprintf(query, "INSERT INTO user_blocklist (account_id, blocked_gc, name, "
+            "class, flags) VALUES ('%" PRIu32 "', '%" PRIu32 "', '%s', "
+            "'%" PRIu8 "', '%" PRIu32 "')", acc, blocked, name,
+            pkt->blocked_class, flags);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    /* Return success here, even if the row wasn't added (since the only reason
+       it shouldn't get added is if there is a key conflict, which implies that
+       the user was already blocked). */
+    return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_NO_ERROR, gc, block, NULL);
+}
+
 /* Process one ship packet. */
 int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
     uint16_t type = ntohs(pkt->pkt_type);
@@ -3684,7 +3756,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             shipgate_login6_reply_pkt *p = (shipgate_login6_reply_pkt *)pkt;
 
             if(!(flags & SHDR_RESPONSE)) {
-                debug(DBG_WARN, "Client sent invalid login response\n");
+                debug(DBG_WARN, "Ship sent invalid login response\n");
                 return -1;
             }
 
@@ -3773,7 +3845,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
         case SHDR_TYPE_SCHUNK:
             /* Sanity check... */
             if(!(flags & SHDR_RESPONSE)) {
-                debug(DBG_WARN, "Client sent script chunk?\n");
+                debug(DBG_WARN, "Ship sent script chunk?\n");
                 return -1;
             }
 
@@ -3791,6 +3863,19 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_QFLAG_GET:
             return handle_qflag_get(c, (shipgate_qflag_pkt *)pkt);
+
+        case SHDR_TYPE_SHIP_CTL:
+            /* Sanity check... */
+            if(!(flags & SHDR_RESPONSE)) {
+                debug(DBG_WARN, "Ship sent ship control?\n");
+                return -1;
+            }
+
+            /* XXXX */
+            return 0;
+
+        case SHDR_TYPE_UBL_ADD:
+            return handle_ubl_add(c, (shipgate_ubl_add_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);

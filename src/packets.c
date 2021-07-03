@@ -888,3 +888,29 @@ int send_user_blocklist(ship_t *c) {
     /* Send it away */
     return send_crypt(c, len);
 }
+
+int send_user_error(ship_t *c, uint16_t pkt_type, uint32_t err_code,
+                    uint32_t gc, uint32_t block, const char *message) {
+    shipgate_user_err_pkt *pkt = (shipgate_user_err_pkt *)sendbuf;
+    uint16_t len = message ? strlen(message) : 0;
+    uint16_t fl = err_code != ERR_NO_ERROR ? SHDR_FAILURE : 0;
+
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Round up the length to the next multiple of 8. */
+    len += sizeof(shipgate_user_err_pkt);
+    if(len & 7)
+        len = (len + 7) & (~7);
+
+    memset(pkt, 0, len);
+    pkt->base.hdr.pkt_type = htons(pkt_type);
+    pkt->base.hdr.pkt_len = htons(len);
+    pkt->base.hdr.flags = htons(SHDR_RESPONSE | fl);
+
+    pkt->gc = htonl(gc);
+    pkt->block = htonl(block);
+    strcpy(pkt->message, message);
+
+    return send_crypt(c, len);
+}

@@ -94,6 +94,14 @@ typedef struct shipgate_sctl_err {
     uint32_t reserved2;
 } PACKED shipgate_sctl_err_pkt;
 
+/* Error packet used in response to various user commands */
+typedef struct shipgate_user_err {
+    shipgate_error_pkt base;
+    uint32_t gc;
+    uint32_t block;
+    char message[0];
+} PACKED shipgate_user_err_pkt;
+
 /* The request sent from the shipgate for a ship to identify itself. */
 typedef struct shipgate_login {
     shipgate_hdr_t hdr;
@@ -584,6 +592,7 @@ static const char shipgate_login_msg[] =
 /* General error codes */
 #define ERR_NO_ERROR            0x00000000
 #define ERR_BAD_ERROR           0x80000001
+#define ERR_REQ_LOGIN           0x80000002
 
 /* Error codes in response to shipgate_login_reply_pkt */
 #define ERR_LOGIN_BAD_KEY       0x00000001
@@ -775,5 +784,9 @@ void user_blocklist_append(uint32_t gc, uint32_t flags);
 
 /* Finish off a user blocklist packet and send it along */
 int send_user_blocklist(ship_t *c);
+
+/* Send an error response to a user */
+int send_user_error(ship_t *c, uint16_t pkt_type, uint32_t err_code,
+                    uint32_t gc, uint32_t block, const char *message);
 
 #endif /* !SHIPGATE_H */
