@@ -224,6 +224,13 @@ static int check_user_blocklist(uint32_t searcher, uint32_t guildcard,
     return rv;
 }
 
+static size_t my_strnlen(const uint8_t *str, size_t len) {
+    size_t rv = 0;
+
+    while(*str++ && ++rv < len) ;
+    return rv;
+}
+
 /* Create a new connection, storing it in the list of ships. */
 ship_t *create_connection_tls(int sock, struct sockaddr *addr, socklen_t size) {
     ship_t *rv;
@@ -3673,9 +3680,227 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
                       value, ctl);
 }
 
+static int handle_sctl_uname(ship_t *c, shipgate_sctl_uname_reply_pkt *pkt,
+                             uint16_t len, uint16_t flags) {
+    char str[65], esc[132];
+    char query[1024];
+    (void)len;
+    (void)flags;
+
+    /* Parse each part and insert it into the db. */
+    memcpy(str, pkt->name, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_NAME, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname name for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->node, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_NODE, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname node for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->release, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_RELEASE,
+            esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname release for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->version, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_VERSION,
+            esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname version for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->machine, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_MACHINE,
+            esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname machine for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    return 0;
+}
+
+static int handle_sctl_version(ship_t *c, shipgate_sctl_ver_reply_pkt *pkt,
+                               uint16_t len, uint16_t flags) {
+    uint8_t tmp[6], esc[43];
+    char query[1024];
+    uint8_t *esc2;
+    (void)flags;
+
+    tmp[0] = pkt->ver_major;
+    tmp[1] = 0;
+    tmp[2] = pkt->ver_minor;
+    tmp[3] = 0;
+    tmp[4] = pkt->ver_micro;
+    tmp[5] = 0;
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)tmp, 6);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_VERSION, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    tmp[0] = flags;
+    tmp[1] = 0;
+    tmp[2] = 0;
+    tmp[3] = 0;
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)tmp, 4);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_FLAGS, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version flags for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)pkt->commithash, 20);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_CMT_HASH, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version hash for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)&pkt->committime, 8);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_CMT_TIME, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version timestamp for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    len -= sizeof(shipgate_sctl_ver_reply_pkt) - 1;
+    esc2 = (uint8_t *)malloc(len * 2 + 1);
+    if(!esc2) {
+        debug(DBG_WARN, "Cannot allocate for version ref for ship '%s': %s\n",
+              c->name, strerror(errno));
+        return -1;
+    }
+
+    sylverant_db_escape_str(&conn, (char *)esc2, (char *)pkt->remoteref,
+                            my_strnlen(pkt->remoteref, len));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_CMT_REF, esc2);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version ref for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+    free(esc2);
+
+    return 0;
+}
+
+static int handle_shipctl_reply(ship_t *c, shipgate_shipctl_pkt *pkt,
+                                uint16_t len, uint16_t flags) {
+    uint32_t ctl;
+
+    /* Make sure the packet is at least safe to parse */
+    if(len < sizeof(shipgate_shipctl_pkt)) {
+        debug(DBG_WARN, "%s sent shipctl reply that was too short\n", c->name);
+        return -1;
+    }
+
+    if(!(flags & SHDR_RESPONSE)) {
+        debug(DBG_WARN, "%s sent non-response shipctl\n", c->name);
+        return -1;
+    }
+    else if((flags & SHDR_FAILURE)) {
+        debug(DBG_WARN, "%s sent failure shipctl response\n", c->name);
+        return -1;
+    }
+
+    /* Figure out what we're dealing with a response to */
+    ctl = ntohl(pkt->ctl);
+    switch(ctl) {
+        case SCTL_TYPE_RESTART:
+        case SCTL_TYPE_SHUTDOWN:
+            debug(DBG_WARN, "%s sent response to shutdown/restart\n", c->name);
+            return -1;
+
+        case SCTL_TYPE_UNAME:
+            if(pkt->hdr.version != 0) {
+                debug(DBG_WARN, "%s sent unknown sctl uname version: %" PRIu8
+                      "\n", c->name, pkt->hdr.version);
+                return -1;
+            }
+
+            if(len < sizeof(shipgate_sctl_uname_reply_pkt)) {
+                debug(DBG_WARN, "%s sent short sctl uname reply\n", c->name);
+                return -1;
+            }
+
+            return handle_sctl_uname(c, (shipgate_sctl_uname_reply_pkt *)pkt,
+                                     len, flags);
+
+        case SCTL_TYPE_VERSION:
+            if(pkt->hdr.version != 0) {
+                debug(DBG_WARN, "%s sent unknown sctl ver version: %" PRIu8
+                      "\n", c->name, pkt->hdr.version);
+                return -1;
+            }
+
+            if(len < sizeof(shipgate_sctl_ver_reply_pkt)) {
+                debug(DBG_WARN, "%s sent short sctl ver reply\n", c->name);
+                return -1;
+            }
+
+            return handle_sctl_version(c, (shipgate_sctl_ver_reply_pkt *)pkt,
+                                       len, flags);
+
+        default:
+            debug(DBG_WARN, "%s sent unknown shipctl (%" PRIu32 ")\n", c->name,
+                  ctl);
+            return -1;
+    }
+}
+
 static int handle_ubl_add(ship_t *c, shipgate_ubl_add_pkt *pkt) {
     char query[1024];
-    char name[65];
+    char tmp[33], name[67];
     uint32_t gc, block, blocked, flags, acc;
     void *result;
     char **row;
@@ -3724,8 +3949,9 @@ static int handle_ubl_add(ship_t *c, shipgate_ubl_add_pkt *pkt) {
     acc = atoi(row[0]);
     sylverant_db_result_free(result);
 
-    sylverant_db_escape_str(&conn, name, (const char *)pkt->blocked_name,
-                            strlen((const char *)pkt->blocked_name));
+    memcpy(tmp, pkt->blocked_name, 32);
+    tmp[32] = 0;
+    sylverant_db_escape_str(&conn, name, tmp, strlen(tmp));
 
     sprintf(query, "INSERT INTO user_blocklist (account_id, blocked_gc, name, "
             "class, flags) VALUES ('%" PRIu32 "', '%" PRIu32 "', '%s', "
@@ -3865,14 +4091,8 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             return handle_qflag_get(c, (shipgate_qflag_pkt *)pkt);
 
         case SHDR_TYPE_SHIP_CTL:
-            /* Sanity check... */
-            if(!(flags & SHDR_RESPONSE)) {
-                debug(DBG_WARN, "Ship sent ship control?\n");
-                return -1;
-            }
-
-            /* XXXX */
-            return 0;
+            return handle_shipctl_reply(c, (shipgate_shipctl_pkt *)pkt,
+                                        ntohs(pkt->pkt_len), flags);
 
         case SHDR_TYPE_UBL_ADD:
             return handle_ubl_add(c, (shipgate_ubl_add_pkt *)pkt);

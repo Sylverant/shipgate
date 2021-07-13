@@ -466,16 +466,11 @@ typedef struct shipgate_sctl_uname_reply {
     shipgate_hdr_t hdr;
     uint32_t ctl;
     uint32_t unused;
-    uint32_t reserved1;
-    uint32_t reserved2;
-    uint16_t namelen;
-    uint16_t nodelen;
-    uint16_t rellen;
-    uint16_t verlen;
-    uint16_t machlen;
-    uint16_t reserved3;
-    uint32_t reserved4;
-    uint8_t data[];
+    uint8_t name[64];
+    uint8_t node[64];
+    uint8_t release[64];
+    uint8_t version[64];
+    uint8_t machine[64];
 } PACKED shipgate_sctl_uname_reply_pkt;
 
 /* Packet used to communicate fine-grained version information from a ship. */

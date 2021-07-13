@@ -127,4 +127,16 @@ void destroy_connection(ship_t *c);
 /* Handle incoming data to the shipgate. */
 int handle_pkt(ship_t *s);
 
+/* IDs for the ship_metadata table */
+#define SHIP_METADATA_VER_VERSION       1
+#define SHIP_METADATA_VER_FLAGS         2
+#define SHIP_METADATA_VER_CMT_HASH      3
+#define SHIP_METADATA_VER_CMT_TIME      4
+#define SHIP_METADATA_VER_CMT_REF       5
+#define SHIP_METADATA_UNAME_NAME        6
+#define SHIP_METADATA_UNAME_NODE        7
+#define SHIP_METADATA_UNAME_RELEASE     8
+#define SHIP_METADATA_UNAME_VERSION     9
+#define SHIP_METADATA_UNAME_MACHINE     10
+
 #endif /* !SHIP_H */
