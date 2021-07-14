@@ -464,7 +464,7 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     uint32_t i;
 #endif
 
-    /* Check the protocol version for support (TLS first supported in v10) */
+    /* Check the protocol version for support */
     if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
         debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
 
@@ -559,6 +559,16 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
         }
     }
 #endif
+
+    /* Does this ship support the initial shipctl packets? If so, send it a
+       uname and a version request. */
+    if(pver >= 19) {
+        if(send_sctl(c, SCTL_TYPE_UNAME, 0))
+            return -1;
+
+        if(send_sctl(c, SCTL_TYPE_VERSION, 0))
+            return -1;
+    }
 
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
