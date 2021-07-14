@@ -466,6 +466,8 @@ typedef struct shipgate_sctl_uname_reply {
     shipgate_hdr_t hdr;
     uint32_t ctl;
     uint32_t unused;
+    uint32_t reserved1;
+    uint32_t reserved2;
     uint8_t name[64];
     uint8_t node[64];
     uint8_t release[64];
