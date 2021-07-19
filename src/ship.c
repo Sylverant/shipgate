@@ -3787,7 +3787,7 @@ static int handle_sctl_version(ship_t *c, shipgate_sctl_ver_reply_pkt *pkt,
               c->name, sylverant_db_error(&conn));
     }
 
-    tmp[0] = flags;
+    tmp[0] = pkt->flags;
     tmp[1] = 0;
     tmp[2] = 0;
     tmp[3] = 0;
