@@ -142,7 +142,7 @@ static int ship_script_add(xmlChar *file, xmlChar *remote, int mod,
     }
 
     /* Is the script deleted? */
-    if(!is_del) {
+    if(!deleted) {
         if(!(fp = fopen((char *)file, "rb"))) {
             debug(DBG_WARN, "Cannot open script file '%s'\n", file);
             return -2;
@@ -304,8 +304,23 @@ int script_list_read(const char *fn) {
             /* See if we have all <module> elements... */
             file = xmlGetProp(n, XC"file");
             remote = xmlGetProp(n, XC"remote_file");
+            deleted = xmlGetProp(n, XC"deleted");
 
-            if(!file || !remote) {
+            if(deleted) {
+                if(!xmlStrcmp(deleted, XC"true")) {
+                    is_del = 1;
+                }
+                else if(xmlStrcmp(deleted, XC"false")) {
+                    debug(DBG_WARN, "Ignoring unknown value for deleted (%s) "
+                          "on line %hu, assuming false\n", (char *)deleted,
+                          n->line);
+                }
+            }
+
+            /* We don't need this anymore... */
+            xmlFree(deleted);
+
+            if((!is_del && !file) || !remote) {
                 debug(DBG_WARN, "Incomplete module entry on line %hu\n",
                       n->line);
                 xmlFree(remote);
@@ -314,7 +329,7 @@ int script_list_read(const char *fn) {
             }
 
             /* Add it to the list. */
-            if(ship_script_add(file, remote, 1, 0, &num_alloc)) {
+            if(ship_script_add(file, remote, 1, 0, &num_alloc, is_del)) {
                 xmlFree(remote);
                 xmlFree(file);
             }
@@ -341,10 +356,12 @@ int script_list_read(const char *fn) {
                 }
             }
 
+            /* We don't need this anymore... */
+            xmlFree(deleted);
+
             if((!is_del && !file) || !remote) {
                 debug(DBG_WARN, "Incomplete ship entry on line %hu\n",
                       n->line);
-                xmlFree(deleted);
                 xmlFree(event);
                 xmlFree(remote);
                 xmlFree(file);
@@ -358,7 +375,6 @@ int script_list_read(const char *fn) {
                 if(sidx == -1) {
                     debug(DBG_WARN, "Ignoring unknown event (%s) on line %hu\n",
                           (char *)event, n->line);
-                    xmlFree(deleted);
                     xmlFree(event);
                     xmlFree(remote);
                     xmlFree(file);
@@ -369,8 +385,7 @@ int script_list_read(const char *fn) {
                 sidx = -1;
             }
 
-            /* We're done with these now... */
-            xmlFree(deleted);
+            /* We're done with this now... */
             xmlFree(event);
 
             /* Add it to the list. */
