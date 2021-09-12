@@ -334,8 +334,14 @@ int script_list_read(const char *fn) {
                 xmlFree(file);
             }
             else {
-                debug(DBG_LOG, "Added module '%s'\n",
-                      scripts[script_count - 1].local_fn);
+                if(!is_del) {
+                    debug(DBG_LOG, "Added module '%s'\n",
+                          scripts[script_count - 1].local_fn);
+                }
+                else {
+                    debug(DBG_LOG, "Added deleted module '%s'\n",
+                          scripts[script_count - 1].remote_fn);
+                }
             }
         }
         else if(!xmlStrcmp(n->name, XC"ship")) {
@@ -394,8 +400,14 @@ int script_list_read(const char *fn) {
                 xmlFree(file);
             }
             else {
-                debug(DBG_LOG, "Added ship script '%s'\n",
-                      scripts[script_count - 1].local_fn);
+                if(!is_del) {
+                    debug(DBG_LOG, "Added ship script '%s'\n",
+                          scripts[script_count - 1].local_fn);
+                }
+                else {
+                    debug(DBG_LOG, "Added deleted ship script '%s'\n",
+                          scripts[script_count - 1].remote_fn);
+                }
             }
         }
 
