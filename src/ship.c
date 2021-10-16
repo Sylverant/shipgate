@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
     Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018,
-                  2019, 2020 Lawrence Sebald
+                  2019, 2020, 2021 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -55,6 +55,7 @@
 #define VERSION_GC              2
 #define VERSION_EP3             3
 #define VERSION_BB              4
+#define VERSION_XBOX            5
 
 /* Database connection */
 extern sylverant_dbconn_t conn;
@@ -168,6 +169,7 @@ static monster_event_t *find_current_event(uint8_t difficulty, uint8_t ver,
 }
 
 static ship_script_t *find_script(const char *fn, int module) {
+#ifdef ENABLE_LUA
     uint32_t i;
 
     /* Go through the list looking for a match. */
@@ -176,8 +178,57 @@ static ship_script_t *find_script(const char *fn, int module) {
            !strcmp(scripts[i].remote_fn, fn))
             return scripts + i;
     }
+#else
+    (void)fn;
+    (void)module;
+#endif
 
     return NULL;
+}
+
+/* Returns non-zero if the specified access should be blocked */
+static int check_user_blocklist(uint32_t searcher, uint32_t guildcard,
+                                uint32_t flags) {
+    char query[128];
+    uint32_t read_flags;
+    int rv = 0;
+    void *result;
+    char **row;
+
+    sprintf(query, "SELECT flags FROM user_blocklist NATURAL JOIN guildcards "
+            "WHERE user_blocklist.blocked_gc='%u' AND guildcard='%u'", searcher,
+            guildcard);
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Blocklist Error: %s\n", sylverant_db_error(&conn));
+        return 0;
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch blocklist result: %s\n",
+              sylverant_db_error(&conn));
+        return 0;
+    }
+
+    if((row = sylverant_db_result_fetch(result))) {
+        /* There's a hit on the blocklist, check if they're blocking search. */
+        errno = 0;
+        read_flags = (uint32_t)strtoul(row[0], NULL, 0);
+
+        if(!errno && (read_flags & flags) == flags)
+            rv = 1;
+    }
+
+    /* Clean up and return what we got */
+    sylverant_db_result_free(result);
+    return rv;
+}
+
+static size_t my_strnlen(const uint8_t *str, size_t len) {
+    size_t rv = 0;
+
+    while(*str++ && ++rv < len) ;
+    return rv;
 }
 
 /* Create a new connection, storing it in the list of ships. */
@@ -408,9 +459,12 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
     uint16_t menu_code = ntohs(pkt->menu_code);
     int ship_number;
     uint64_t ip6_hi, ip6_lo;
-    uint32_t clients = 0, i;
+    uint32_t clients = 0;
+#ifdef ENABLE_LUA
+    uint32_t i;
+#endif
 
-    /* Check the protocol version for support (TLS first supported in v10) */
+    /* Check the protocol version for support */
     if(pver < SHIPGATE_MINIMUM_PROTO_VER || pver > SHIPGATE_MAXIMUM_PROTO_VER) {
         debug(DBG_WARN, "Invalid protocol version: %lu\n", pver);
 
@@ -505,6 +559,16 @@ static int handle_shipgate_login6t(ship_t *c, shipgate_login6_reply_pkt *pkt) {
         }
     }
 #endif
+
+    /* Does this ship support the initial shipctl packets? If so, send it a
+       uname and a version request. */
+    if(pver >= 19) {
+        if(send_sctl(c, SCTL_TYPE_UNAME, 0))
+            return -1;
+
+        if(send_sctl(c, SCTL_TYPE_VERSION, 0))
+            return -1;
+    }
 
     /* Send a status packet to each of the ships. */
     TAILQ_FOREACH(j, &ships, qentry) {
@@ -719,11 +783,16 @@ static int save_mail(uint32_t gc, uint32_t from, void *pkt, int version) {
 
 static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
+    uint32_t sender = LE32(pkt->gc_sender);
     char query[256];
     void *result;
     char **row;
     uint16_t ship_id;
     ship_t *s;
+
+    /* See if the client being sent the mail has blocked the user sending it */
+    if(check_user_blocklist(sender, guildcard, BLOCKLIST_MAIL))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
@@ -743,7 +812,7 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
     if(!(row = sylverant_db_result_fetch(result))) {
         /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_DC);
+        return save_mail(guildcard, sender, pkt, VERSION_DC);
     }
 
     /* Grab the data from the result */
@@ -770,11 +839,16 @@ static int handle_dc_mail(ship_t *c, dc_simple_mail_pkt *pkt) {
 
 static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
+    uint32_t sender = LE32(pkt->gc_sender);
     char query[256];
     void *result;
     char **row;
     uint16_t ship_id;
     ship_t *s;
+
+    /* See if the client being sent the mail has blocked the user sending it */
+    if(check_user_blocklist(sender, guildcard, BLOCKLIST_MAIL))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
@@ -794,7 +868,7 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
     if(!(row = sylverant_db_result_fetch(result))) {
         /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_PC);
+        return save_mail(guildcard, sender, pkt, VERSION_PC);
     }
 
     /* Grab the data from the result */
@@ -821,11 +895,16 @@ static int handle_pc_mail(ship_t *c, pc_simple_mail_pkt *pkt) {
 
 static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     uint32_t guildcard = LE32(pkt->gc_dest);
+    uint32_t sender = LE32(pkt->gc_sender);
     char query[256];
     void *result;
     char **row;
     uint16_t ship_id;
     ship_t *s;
+
+    /* See if the client being sent the mail has blocked the user sending it */
+    if(check_user_blocklist(sender, guildcard, BLOCKLIST_MAIL))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT ship_id FROM online_clients WHERE guildcard='%u'",
@@ -845,7 +924,7 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
     if(!(row = sylverant_db_result_fetch(result))) {
         /* The user's not online, see if we should save it. */
         sylverant_db_result_free(result);
-        return save_mail(guildcard, LE32(pkt->gc_sender), pkt, VERSION_BB);
+        return save_mail(guildcard, sender, pkt, VERSION_BB);
     }
 
     /* Grab the data from the result */
@@ -873,6 +952,7 @@ static int handle_bb_mail(ship_t *c, bb_simple_mail_pkt *pkt) {
 static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
                                uint32_t flags) {
     uint32_t guildcard = LE32(pkt->gc_target);
+    uint32_t searcher = LE32(pkt->gc_search);
     char query[512];
     void *result;
     char **row;
@@ -883,6 +963,11 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
     dc_guild_reply_pkt reply;
     dc_guild_reply6_pkt reply6;
     char lobby_name[32], gname[17];
+
+    /* See if the client being searched for has blocked the one doing the
+       searching... */
+    if(check_user_blocklist(searcher, guildcard, BLOCKLIST_GSEARCH))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
@@ -1078,13 +1163,18 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     char **row;
     uint16_t ship_id, port;
     uint32_t lobby_id, ip, block, dlobby_id;
-    uint64_t ip6_hi, ip6_lo;
+    /* uint64_t ip6_hi, ip6_lo; */
     ship_t *s;
     bb_guild_reply_pkt reply;
     size_t in, out;
     ICONV_CONST char *inptr;
     char *outptr;
     char lobby_name[32], gname[17];
+
+    /* See if the client being searched for has blocked the one doing the
+       searching... */
+    if(check_user_blocklist(gc_sender, guildcard, BLOCKLIST_GSEARCH))
+        return 0;
 
     /* Figure out where the user requested is */
     sprintf(query, "SELECT online_clients.name, online_clients.ship_id, block, "
@@ -1141,8 +1231,11 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     block = (uint32_t)strtoul(row[2], NULL, 0);
     lobby_id = (uint32_t)strtoul(row[4], NULL, 0);
     ip = (uint32_t)strtoul(row[6], NULL, 0);
+    /* Not supported yet.... */
+    /*
     ip6_hi = (uint64_t)strtoull(row[9], NULL, 0);
     ip6_lo = (uint64_t)strtoull(row[10], NULL, 0);
+    */
     dlobby_id = (uint32_t)strtoul(row[11], NULL, 0);
 
     if(errno) {
@@ -2146,7 +2239,7 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     char query[512];
     char name[64];
     char tmp[128];
-    uint32_t gc, bl, gc2, bl2, opt;
+    uint32_t gc, bl, gc2, bl2, opt, acc = 0;
     uint16_t ship_id;
     ship_t *c2;
     void *result;
@@ -2232,6 +2325,10 @@ static int handle_blocklogin(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* For each bite we get, send out a friend login packet */
     while((row = sylverant_db_result_fetch(result))) {
         gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+
+        if(check_user_blocklist(gc2, gc, BLOCKLIST_FLIST))
+            continue;
+
         bl2 = (uint32_t)strtoul(row[1], NULL, 0);
         ship_id = (uint16_t)strtoul(row[2], NULL, 0);
         c2 = find_ship(ship_id);
@@ -2305,14 +2402,14 @@ skip_opts:
     if(!(row = sylverant_db_result_fetch(result)) || !row[0])
         goto skip_mail;
 
-    gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+    acc = (uint32_t)strtoul(row[0], NULL, 0);
     sylverant_db_result_free(result);
 
     /* See whether the user has any saved mail. */
     sprintf(query, "SELECT COUNT(*) FROM simple_mail INNER JOIN guildcards ON "
             "simple_mail.recipient = guildcards.guildcard WHERE "
             "guildcards.account_id='%" PRIu32 "' AND simple_mail.status='0'",
-            gc2);
+            acc);
 
     /* Query for any results */
     if(sylverant_db_query(&conn, query)) {
@@ -2355,7 +2452,7 @@ skip_opts:
     sprintf(query, "UPDATE simple_mail INNER JOIN guildcards ON "
             "simple_mail.recipient = guildcards.guildcard SET "
             "simple_mail.status='2' WHERE guildcards.account_id='%" PRIu32
-            "' AND simple_mail.status='0'", gc2);
+            "' AND simple_mail.status='0'", acc);
 
     /* Do the update. */
     if(sylverant_db_query(&conn, query)) {
@@ -2371,28 +2468,24 @@ skip_mail:
        TODO: Figure out a better way of searching, since this limits us to one
              ongoing event at a time... */
     if(!(ev = find_current_event(0, 0, 1)))
-        return 0;
+        goto skip_event;
 
     /* See if they're disqualified (and haven't been notified). */
     sprintf(query, "SELECT account_id FROM monster_event_disq WHERE "
             "account_id='%" PRIu32 "' AND event_id='%" PRIu32 "' AND flags='0'",
-            gc, ev->event_id);
+            acc, ev->event_id);
 
     if(sylverant_db_query(&conn, query)) {
-        debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "Couldn't query if disqualified (%" PRIu32 ")\n", acc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-
-        /* Meh. */
-        return 0;
+        goto skip_event;
     }
 
     /* Grab any data we got. */
     if((result = sylverant_db_result_store(&conn)) == NULL) {
-        debug(DBG_WARN, "Couldn't store disqualification (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "Couldn't store disqualification (%" PRIu32 ")\n", acc);
         debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
-
-        /* Meh. */
-        return 0;
+        goto skip_event;
     }
 
     /* If there's a result row, then they're disqualified... */
@@ -2403,7 +2496,7 @@ skip_mail:
 
         sprintf(query, "UPDATE monster_event_disq SET flags='1' WHERE "
                 "event_id='%" PRIu32 "' AND account_id='%" PRIu32 "'",
-                ev->event_id, gc);
+                ev->event_id, acc);
 
         /* Do the update. */
         if(sylverant_db_query(&conn, query)) {
@@ -2417,6 +2510,44 @@ skip_mail:
        far, then we should be good to go... */
     sylverant_db_result_free(result);
 
+skip_event:
+    /* Skip the client's blocklist if the ship is running earlier than protocol
+       version 19. */
+    if(c->proto_ver < 19)
+        goto skip_bl;
+
+    /* See if they've got anyone on their list */
+    sprintf(query, "SELECT blocked_gc, flags FROM user_blocklist WHERE "
+            "account_id='%" PRIu32 "'", acc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Couldn't query for blocklist (%" PRIu32 ")\n", acc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_bl;
+    }
+
+    /* Grab any data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't store blocklist (%" PRIu32 ")\n", acc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        goto skip_bl;
+    }
+
+    /* Put together the blocklist packet */
+    user_blocklist_begin(gc, bl);
+
+    while((row = sylverant_db_result_fetch(result))) {
+        gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+        bl2 = (uint32_t)strtoul(row[1], NULL, 0);
+        user_blocklist_append(gc2, bl2);
+    }
+
+    sylverant_db_result_free(result);
+
+    /* We're done, send it */
+    send_user_blocklist(c);
+
+skip_bl:
     /* We're done (no need to tell the ship on success) */
     return 0;
 }
@@ -2502,6 +2633,10 @@ static int handle_blocklogout(ship_t *c, shipgate_block_login_pkt *pkt) {
     /* For each bite we get, send out a friend logout packet */
     while((row = sylverant_db_result_fetch(result))) {
         gc2 = (uint32_t)strtoul(row[0], NULL, 0);
+
+        if(check_user_blocklist(gc2, gc, BLOCKLIST_FLIST))
+            continue;
+
         bl2 = (uint32_t)strtoul(row[1], NULL, 0);
         ship_id = (uint16_t)strtoul(row[2], NULL, 0);
         c2 = find_ship(ship_id);
@@ -2861,7 +2996,7 @@ static int handle_kick(ship_t *c, shipgate_kick_pkt *pkt) {
 }
 
 static int handle_frlist_req(ship_t *c, shipgate_friend_list_req *pkt) {
-    uint32_t gcr, block, start;
+    uint32_t gcr, gcf, block, start;
     char query[256];
     void *result;
     char **row;
@@ -2894,20 +3029,28 @@ static int handle_frlist_req(ship_t *c, shipgate_friend_list_req *pkt) {
 
     /* Fetch our max of 5 entries... i will be left as the number found */
     for(i = 0; i < 5 && (row = sylverant_db_result_fetch(result)); ++i) {
-        entries[i].guildcard = htonl(strtoul(row[0], NULL, 0));
+        gcf = (uint32_t)strtoul(row[0], NULL, 0);
+        entries[i].guildcard = htonl(gcf);
 
-        if(row[2]) {
-            entries[i].ship = htonl(strtoul(row[2], NULL, 0));
-        }
-        else {
+        /* Make sure the user isn't blocked from seeing this person. */
+        if(check_user_blocklist(gcr, gcf, BLOCKLIST_FLIST)) {
             entries[i].ship = 0;
-        }
-
-        if(row[3]) {
-            entries[i].block = htonl(strtoul(row[3], NULL, 0));
+            entries[i].block = 0;
         }
         else {
-            entries[i].block = 0;
+            if(row[2]) {
+                entries[i].ship = htonl(strtoul(row[2], NULL, 0));
+            }
+            else {
+                entries[i].ship = 0;
+            }
+
+            if(row[3]) {
+                entries[i].block = htonl(strtoul(row[3], NULL, 0));
+            }
+            else {
+                entries[i].block = 0;
+            }
         }
 
         entries[i].reserved = 0;
@@ -3437,42 +3580,42 @@ static int handle_sdata(ship_t *s, shipgate_sdata_pkt *pkt) {
 
 static int handle_qflag_set(ship_t *c, shipgate_qflag_pkt *pkt) {
     char query[1024];
-    uint32_t gc, block, flag_id, value, qid;
-    void *result;
-    char **row;
+    uint32_t gc, block, flag_id, value, qid, ctl;
 
     /* Parse out the packet data */
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
     flag_id = ntohl(pkt->flag_id);
+    ctl = flag_id & 0xFFFF0000;
+    flag_id = (flag_id & 0x0000FFFF) | (ntohs(pkt->flag_id_hi) << 16);
     qid = ntohl(pkt->quest_id);
     value = ntohl(pkt->value);
 
     /* Build the db query */
-    if(!(flag_id & QFLAG_DELETE_FLAG)) {
-        if(!(flag_id & QFLAG_LONG_FLAG)) {
+    if(!(ctl & QFLAG_DELETE_FLAG)) {
+        if(!(ctl & QFLAG_LONG_FLAG)) {
             sprintf(query, "INSERT INTO quest_flags_short (guildcard, flag_id, "
                     " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32
                     "') ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
-                    flag_id & 0x00FFFFFF, value & 0xFFFF);
+                    flag_id, value & 0xFFFF);
         }
         else {
             sprintf(query, "INSERT INTO quest_flags_long (guildcard, flag_id, "
                     " value) VALUES('%" PRIu32 "', '%" PRIu32 "', '%" PRIu32
                     "') ON DUPLICATE KEY UPDATE value=VALUES(value)", gc,
-                    flag_id & 0x00FFFFFF, value);
+                    flag_id, value);
         }
     }
     else {
-        if(!(flag_id & QFLAG_LONG_FLAG)) {
+        if(!(ctl & QFLAG_LONG_FLAG)) {
             sprintf(query, "DELETE FROM quest_flags_short WHERE guildcard='%"
                     PRIu32 "' AND flag_id='%" PRIu32 "'", gc,
-                    flag_id & 0x00FFFFFF);
+                    flag_id);
         }
         else {
             sprintf(query, "DELETE FROM quest_flags_long WHERE guildcard='%"
                     PRIu32 "' AND flag_id='%" PRIu32 "'", gc,
-                    flag_id & 0x00FFFFFF);
+                    flag_id);
         }
     }
 
@@ -3484,12 +3627,12 @@ static int handle_qflag_set(ship_t *c, shipgate_qflag_pkt *pkt) {
     }
 
     return send_qflag(c, SHDR_TYPE_QFLAG_SET, gc, block, flag_id, qid,
-                      value);
+                      value, ctl);
 }
 
 static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     char query[1024];
-    uint32_t gc, block, flag_id, value, qid;
+    uint32_t gc, block, flag_id, value, qid, ctl;
     void *result;
     char **row;
 
@@ -3497,10 +3640,12 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
     flag_id = ntohl(pkt->flag_id);
+    ctl = flag_id & 0xFFFF0000;
+    flag_id = (flag_id & 0x0000FFFF) | (ntohs(pkt->flag_id_hi) << 16);
     qid = ntohl(pkt->quest_id);
 
     /* Make sure the packet is sane... */
-    if((flag_id & QFLAG_DELETE_FLAG)) {
+    if((ctl & QFLAG_DELETE_FLAG)) {
         debug(DBG_WARN, "Ship sent delete flag bit on get flag packet!"
               "Dropping request.\n");
         return send_error(c, SHDR_TYPE_QFLAG_GET, SHDR_FAILURE,
@@ -3508,13 +3653,13 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     }
 
     /* Build the db query */
-    if(!(flag_id & QFLAG_LONG_FLAG)) {
+    if(!(ctl & QFLAG_LONG_FLAG)) {
         sprintf(query, "SELECT value FROM quest_flags_short WHERE guildcard='%"
-                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x00FFFFFF);
+                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id);
     }
     else {
         sprintf(query, "SELECT value FROM quest_flags_long WHERE guildcard='%"
-                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id & 0x00FFFFFF);
+                PRIu32 "' AND flag_id='%" PRIu32 "'", gc, flag_id);
     }
 
     /* Execute the query */
@@ -3542,7 +3687,298 @@ static int handle_qflag_get(ship_t *c, shipgate_qflag_pkt *pkt) {
     sylverant_db_result_free(result);
 
     return send_qflag(c, SHDR_TYPE_QFLAG_GET, gc, block, flag_id, qid,
-                      value);
+                      value, ctl);
+}
+
+static int handle_sctl_uname(ship_t *c, shipgate_sctl_uname_reply_pkt *pkt,
+                             uint16_t len, uint16_t flags) {
+    char str[65], esc[132];
+    char query[1024];
+    (void)len;
+    (void)flags;
+
+    /* Parse each part and insert it into the db. */
+    memcpy(str, pkt->name, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_NAME, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname name for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->node, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_NODE, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname node for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->release, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_RELEASE,
+            esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname release for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->version, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_VERSION,
+            esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname version for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    memcpy(str, pkt->machine, 64);
+    str[64] = 0;
+    sylverant_db_escape_str(&conn, esc, str, strlen(str));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_UNAME_MACHINE,
+            esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store uname machine for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    return 0;
+}
+
+static int handle_sctl_version(ship_t *c, shipgate_sctl_ver_reply_pkt *pkt,
+                               uint16_t len, uint16_t flags) {
+    uint8_t tmp[6], esc[43];
+    char query[1024];
+    uint8_t *esc2;
+    (void)flags;
+
+    tmp[0] = pkt->ver_major;
+    tmp[1] = 0;
+    tmp[2] = pkt->ver_minor;
+    tmp[3] = 0;
+    tmp[4] = pkt->ver_micro;
+    tmp[5] = 0;
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)tmp, 6);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_VERSION, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    tmp[0] = pkt->flags;
+    tmp[1] = 0;
+    tmp[2] = 0;
+    tmp[3] = 0;
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)tmp, 4);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_FLAGS, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version flags for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)pkt->commithash, 20);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_CMT_HASH, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version hash for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    sylverant_db_escape_str(&conn, (char *)esc, (char *)&pkt->committime, 8);
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_CMT_TIME, esc);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version timestamp for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+
+    len -= sizeof(shipgate_sctl_ver_reply_pkt) - 1;
+    esc2 = (uint8_t *)malloc(len * 2 + 1);
+    if(!esc2) {
+        debug(DBG_WARN, "Cannot allocate for version ref for ship '%s': %s\n",
+              c->name, strerror(errno));
+        return -1;
+    }
+
+    sylverant_db_escape_str(&conn, (char *)esc2, (char *)pkt->remoteref,
+                            my_strnlen(pkt->remoteref, len));
+    sprintf(query, "INSERT INTO ship_metadata (ship_id, metadata_id, value) "
+            "VALUES ('%" PRIu16 "', '%d', '%s') ON DUPLICATE KEY UPDATE "
+            "value=VALUES(value)", c->key_idx, SHIP_METADATA_VER_CMT_REF, esc2);
+
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot store version ref for ship '%s': %s\n",
+              c->name, sylverant_db_error(&conn));
+    }
+    free(esc2);
+
+    return 0;
+}
+
+static int handle_shipctl_reply(ship_t *c, shipgate_shipctl_pkt *pkt,
+                                uint16_t len, uint16_t flags) {
+    uint32_t ctl;
+
+    /* Make sure the packet is at least safe to parse */
+    if(len < sizeof(shipgate_shipctl_pkt)) {
+        debug(DBG_WARN, "%s sent shipctl reply that was too short\n", c->name);
+        return -1;
+    }
+
+    if(!(flags & SHDR_RESPONSE)) {
+        debug(DBG_WARN, "%s sent non-response shipctl\n", c->name);
+        return -1;
+    }
+    else if((flags & SHDR_FAILURE)) {
+        debug(DBG_WARN, "%s sent failure shipctl response\n", c->name);
+        return -1;
+    }
+
+    /* Figure out what we're dealing with a response to */
+    ctl = ntohl(pkt->ctl);
+    switch(ctl) {
+        case SCTL_TYPE_RESTART:
+        case SCTL_TYPE_SHUTDOWN:
+            debug(DBG_WARN, "%s sent response to shutdown/restart\n", c->name);
+            return -1;
+
+        case SCTL_TYPE_UNAME:
+            if(pkt->hdr.version != 0) {
+                debug(DBG_WARN, "%s sent unknown sctl uname version: %" PRIu8
+                      "\n", c->name, pkt->hdr.version);
+                return -1;
+            }
+
+            if(len < sizeof(shipgate_sctl_uname_reply_pkt)) {
+                debug(DBG_WARN, "%s sent short sctl uname reply\n", c->name);
+                return -1;
+            }
+
+            return handle_sctl_uname(c, (shipgate_sctl_uname_reply_pkt *)pkt,
+                                     len, flags);
+
+        case SCTL_TYPE_VERSION:
+            if(pkt->hdr.version != 0) {
+                debug(DBG_WARN, "%s sent unknown sctl ver version: %" PRIu8
+                      "\n", c->name, pkt->hdr.version);
+                return -1;
+            }
+
+            if(len < sizeof(shipgate_sctl_ver_reply_pkt)) {
+                debug(DBG_WARN, "%s sent short sctl ver reply\n", c->name);
+                return -1;
+            }
+
+            return handle_sctl_version(c, (shipgate_sctl_ver_reply_pkt *)pkt,
+                                       len, flags);
+
+        default:
+            debug(DBG_WARN, "%s sent unknown shipctl (%" PRIu32 ")\n", c->name,
+                  ctl);
+            return -1;
+    }
+}
+
+static int handle_ubl_add(ship_t *c, shipgate_ubl_add_pkt *pkt) {
+    char query[1024];
+    char tmp[33], name[67];
+    uint32_t gc, block, blocked, flags, acc;
+    void *result;
+    char **row;
+
+    /* Parse out the packet data */
+    gc = ntohl(pkt->requester);
+    block = ntohl(pkt->block);
+    blocked = ntohl(pkt->blocked_player);
+    flags = ntohl(pkt->flags);
+
+    /* See if the user has an account or not. */
+    sprintf(query, "SELECT account_id FROM guildcards WHERE guildcard='%"
+            PRIu32 "'", gc);
+
+    /* Query for any results */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "Cannot query for account data for gc %" PRIu32
+              ": %s\n", gc, sylverant_db_error(&conn));
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    /* Grab the data we got. */
+    if((result = sylverant_db_result_store(&conn)) == NULL) {
+        debug(DBG_WARN, "Couldn't fetch account data (%" PRIu32 ")\n", gc);
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    if((row = sylverant_db_result_fetch(result)) == NULL) {
+        debug(DBG_WARN, "No result rows for guild card %" PRIu32 "\n", gc);
+        sylverant_db_result_free(result);
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    /* If their account id in the table is NULL, then bail... */
+    if(!row[0]) {
+        sylverant_db_result_free(result);
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_REQ_LOGIN, gc, block,
+                               NULL);
+    }
+
+    /* We've verified they've got an account, continue on. */
+    acc = atoi(row[0]);
+    sylverant_db_result_free(result);
+
+    memcpy(tmp, pkt->blocked_name, 32);
+    tmp[32] = 0;
+    sylverant_db_escape_str(&conn, name, tmp, strlen(tmp));
+
+    sprintf(query, "INSERT INTO user_blocklist (account_id, blocked_gc, name, "
+            "class, flags) VALUES ('%" PRIu32 "', '%" PRIu32 "', '%s', "
+            "'%" PRIu8 "', '%" PRIu32 "')", acc, blocked, name,
+            pkt->blocked_class, flags);
+
+    /* Execute the query */
+    if(sylverant_db_query(&conn, query)) {
+        debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+        return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_BAD_ERROR, gc, block,
+                               NULL);
+    }
+
+    /* Return success here, even if the row wasn't added (since the only reason
+       it shouldn't get added is if there is a key conflict, which implies that
+       the user was already blocked). */
+    return send_user_error(c, SHDR_TYPE_UBL_ADD, ERR_NO_ERROR, gc, block, NULL);
 }
 
 /* Process one ship packet. */
@@ -3556,7 +3992,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
             shipgate_login6_reply_pkt *p = (shipgate_login6_reply_pkt *)pkt;
 
             if(!(flags & SHDR_RESPONSE)) {
-                debug(DBG_WARN, "Client sent invalid login response\n");
+                debug(DBG_WARN, "Ship sent invalid login response\n");
                 return -1;
             }
 
@@ -3645,7 +4081,7 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
         case SHDR_TYPE_SCHUNK:
             /* Sanity check... */
             if(!(flags & SHDR_RESPONSE)) {
-                debug(DBG_WARN, "Client sent script chunk?\n");
+                debug(DBG_WARN, "Ship sent script chunk?\n");
                 return -1;
             }
 
@@ -3663,6 +4099,13 @@ int process_ship_pkt(ship_t *c, shipgate_hdr_t *pkt) {
 
         case SHDR_TYPE_QFLAG_GET:
             return handle_qflag_get(c, (shipgate_qflag_pkt *)pkt);
+
+        case SHDR_TYPE_SHIP_CTL:
+            return handle_shipctl_reply(c, (shipgate_shipctl_pkt *)pkt,
+                                        ntohs(pkt->pkt_len), flags);
+
+        case SHDR_TYPE_UBL_ADD:
+            return handle_ubl_add(c, (shipgate_ubl_add_pkt *)pkt);
 
         default:
             debug(DBG_WARN, "%s sent invalid packet: %hu\n", c->name, type);

@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014, 2016, 2018, 2019 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2016, 2018, 2019, 2021 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -566,6 +566,7 @@ int send_bb_opts(ship_t *c, uint32_t gc, uint32_t block,
 int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
                      const char *name, const char *msg) {
     dc_simple_mail_pkt pkt;
+    size_t amt = strlen(name);
 
     /* Set up the mail. */
     memset(&pkt, 0, sizeof(pkt));
@@ -573,7 +574,17 @@ int send_simple_mail(ship_t *c, uint32_t gc, uint32_t block, uint32_t sender,
     pkt.hdr.pkt_len = LE16(DC_SIMPLE_MAIL_LENGTH);
     pkt.tag = LE32(0x00010000);
     pkt.gc_sender = LE32(sender);
-    strncpy(pkt.name, name, 16);
+
+    /* Thank you GCC for this completely unnecessary warning that means I have
+       to do this stupid song and dance to get rid of it (or tag the variable
+       being used with a GCC-specific attribute) Basically, strncpy is totally
+       useless now when you're dealing with things that need not be
+       terminated. */
+    if(amt > 16)
+        amt = 16;
+
+    memcpy(pkt.name, name, amt);
+
     pkt.gc_dest = LE32(gc);
     strncpy(pkt.stuff, msg, 0x90);
 
@@ -757,7 +768,7 @@ int send_sdata(ship_t *c, uint32_t gc, uint32_t block, uint32_t event,
 
 /* Send a quest flag response */
 int send_qflag(ship_t *c, uint16_t type, uint32_t gc, uint32_t block,
-               uint32_t fid, uint32_t qid, uint32_t value) {
+               uint32_t fid, uint32_t qid, uint32_t value, uint32_t ctl) {
     shipgate_qflag_pkt *pkt = (shipgate_qflag_pkt *)sendbuf;
 
     /* Don't try to send these to a ship that won't know what to do with them */
@@ -771,10 +782,135 @@ int send_qflag(ship_t *c, uint16_t type, uint32_t gc, uint32_t block,
     pkt->hdr.flags = htons(SHDR_RESPONSE);
     pkt->guildcard = htonl(gc);
     pkt->block = htonl(block);
-    pkt->flag_id = htonl(fid);
+    pkt->flag_id = htonl((fid & 0xFFFF) | (ctl & 0xFFFF0000));
     pkt->quest_id = htonl(qid);
+    pkt->flag_id_hi = htons(fid >> 16);
     pkt->value = htonl(value);
 
     /* Send it away. */
     return send_crypt(c, sizeof(shipgate_qflag_pkt));
+}
+
+/* Send a simple ship control request */
+int send_sctl(ship_t *c, uint32_t ctl, uint32_t acc) {
+    shipgate_shipctl_pkt *pkt = (shipgate_shipctl_pkt *)sendbuf;
+
+    /* This packet doesn't exist until protocol 19. */
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Fill in the packet... */
+    memset(pkt, 0, sizeof(shipgate_shipctl_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_shipctl_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SHIP_CTL);
+
+    pkt->ctl = htonl(ctl);
+    pkt->acc = htonl(acc);
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_shipctl_pkt));
+}
+
+/* Send a shutdown/restart request */
+int send_shutdown(ship_t *c, int restart, uint32_t acc, uint32_t when) {
+    shipgate_sctl_shutdown_pkt *pkt = (shipgate_sctl_shutdown_pkt *)sendbuf;
+
+    /* This packet doesn't exist until protocol 19. */
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Fill in the packet... */
+    memset(pkt, 0, sizeof(shipgate_sctl_shutdown_pkt));
+    pkt->hdr.pkt_len = htons(sizeof(shipgate_sctl_shutdown_pkt));
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_SHIP_CTL);
+
+    if(restart)
+        pkt->ctl = htonl(SCTL_TYPE_RESTART);
+    else
+        pkt->ctl = htonl(SCTL_TYPE_SHUTDOWN);
+
+    pkt->acc = htonl(acc);
+    pkt->when = htonl(when);
+
+    /* Send it away. */
+    return send_crypt(c, sizeof(shipgate_sctl_shutdown_pkt));
+}
+
+/* Begin an blocklist packet */
+void user_blocklist_begin(uint32_t guildcard, uint32_t block) {
+    shipgate_user_blocklist_pkt *pkt = (shipgate_user_blocklist_pkt *)sendbuf;
+
+    /* Fill in the packet */
+    pkt->hdr.pkt_len = sizeof(shipgate_user_blocklist_pkt);
+    pkt->hdr.pkt_type = htons(SHDR_TYPE_UBLOCKS);
+    pkt->hdr.flags = 0;
+    pkt->hdr.reserved = 0;
+    pkt->hdr.version = 0;
+
+    pkt->guildcard = htonl(guildcard);
+    pkt->block = htonl(block);
+    pkt->count = 0;
+    pkt->reserved = 0;
+}
+
+/* Append a value to the blocklist packet */
+void user_blocklist_append(uint32_t gc, uint32_t flags) {
+    shipgate_user_blocklist_pkt *pkt = (shipgate_user_blocklist_pkt *)sendbuf;
+    uint32_t i = pkt->count;
+
+    /* Add the blocked user */
+    pkt->entries[i].gc = htonl(gc);
+    pkt->entries[i].flags = htonl(flags);
+
+    /* Adjust the packet's information to account for the new option */
+    pkt->hdr.pkt_len += 8;
+    ++pkt->count;
+}
+
+/* Finish off a user blocklist packet and send it along */
+int send_user_blocklist(ship_t *c) {
+    shipgate_user_blocklist_pkt *pkt = (shipgate_user_blocklist_pkt *)sendbuf;
+    uint16_t len = pkt->hdr.pkt_len;
+
+    /* Make sure we have something to send, at least */
+    if(!pkt->count)
+        return 0;
+
+    /* Make sure we don't try to send to a ship that won't know what to do with
+       the packet. */
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Swap that which we need to do */
+    pkt->hdr.pkt_len = htons(len);
+    pkt->count = htonl(pkt->count);
+
+    /* Send it away */
+    return send_crypt(c, len);
+}
+
+int send_user_error(ship_t *c, uint16_t pkt_type, uint32_t err_code,
+                    uint32_t gc, uint32_t block, const char *message) {
+    shipgate_user_err_pkt *pkt = (shipgate_user_err_pkt *)sendbuf;
+    uint16_t len = message ? strlen(message) : 0;
+    uint16_t fl = err_code != ERR_NO_ERROR ? SHDR_FAILURE : 0;
+
+    if(c->proto_ver < 19)
+        return 0;
+
+    /* Round up the length to the next multiple of 8. */
+    len += sizeof(shipgate_user_err_pkt);
+    if(len & 7)
+        len = (len + 7) & (~7);
+
+    memset(pkt, 0, len);
+    pkt->base.hdr.pkt_type = htons(pkt_type);
+    pkt->base.hdr.pkt_len = htons(len);
+    pkt->base.hdr.flags = htons(SHDR_RESPONSE | fl);
+
+    pkt->gc = htonl(gc);
+    pkt->block = htonl(block);
+    strcpy(pkt->message, message);
+
+    return send_crypt(c, len);
 }

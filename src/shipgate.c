@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2014, 2018, 2019, 2020 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2014, 2018, 2019, 2020, 2021 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -99,7 +99,7 @@ extern uint32_t script_count;
 /* Print information about this program to stdout. */
 static void print_program_info() {
     printf("Sylverant Shipgate version %s\n", VERSION);
-    printf("Copyright (C) 2009-2020 Lawrence Sebald\n\n");
+    printf("Copyright (C) 2009-2021 Lawrence Sebald\n\n");
     printf("This program is free software: you can redistribute it and/or\n"
            "modify it under the terms of the GNU Affero General Public\n"
            "License version 3 as published by the Free Software Foundation.\n\n"
@@ -213,28 +213,26 @@ static void load_config() {
 }
 
 static void init_gnutls() {
-    int rv;
-
     /* Do the initial init */
     gnutls_global_init();
 
     /* Set up our credentials */
     // XXX: Check return values!
-    rv = gnutls_certificate_allocate_credentials(&tls_cred);
-    rv = gnutls_certificate_set_x509_trust_file(tls_cred, cfg->shipgate_ca,
-                                                GNUTLS_X509_FMT_PEM);
-    rv = gnutls_certificate_set_x509_key_file(tls_cred, cfg->shipgate_cert,
-                                              cfg->shipgate_key,
-                                              GNUTLS_X509_FMT_PEM);
+    gnutls_certificate_allocate_credentials(&tls_cred);
+    gnutls_certificate_set_x509_trust_file(tls_cred, cfg->shipgate_ca,
+                                           GNUTLS_X509_FMT_PEM);
+    gnutls_certificate_set_x509_key_file(tls_cred, cfg->shipgate_cert,
+                                         cfg->shipgate_key,
+                                         GNUTLS_X509_FMT_PEM);
 
     /* Generate Diffie-Hellman parameters */
     debug(DBG_LOG, "Generating Diffie-Hellman parameters...\n"
           "This may take a little while.\n");
-    rv = gnutls_dh_params_init(&dh_params);
-    rv = gnutls_dh_params_generate2(dh_params, 1024);
+    gnutls_dh_params_init(&dh_params);
+    gnutls_dh_params_generate2(dh_params, 1024);
     debug(DBG_LOG, "Done!\n");
 
-    rv = gnutls_priority_init(&tls_prio, "NORMAL:+COMP-DEFLATE", NULL);
+    gnutls_priority_init(&tls_prio, "NORMAL:+COMP-DEFLATE", NULL);
 
     gnutls_certificate_set_dh_params(tls_cred, dh_params);
 }
@@ -450,7 +448,9 @@ static void open_db() {
 
 void run_server(int tsock, int tsock6) {
     int nfds;
+#ifdef ENABLE_LUA
     uint32_t j;
+#endif
     struct sockaddr_in addr;
     struct sockaddr_in6 addr6;
     int asock;

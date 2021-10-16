@@ -113,11 +113,11 @@ static inline script_action_t script_action_to_index(xmlChar *str) {
 }
 
 static int ship_script_add(xmlChar *file, xmlChar *remote, int mod,
-                           int action, uint32_t *alloc) {
+                           int action, uint32_t *alloc, int deleted) {
     void *tmp;
     FILE *fp;
-    long len;
-    uint32_t crc;
+    long len = 0;
+    uint32_t crc = 0;
 
     /* Do we have space for this new script? */
     if(!*alloc) {
@@ -141,39 +141,42 @@ static int ship_script_add(xmlChar *file, xmlChar *remote, int mod,
         *alloc *= 2;
     }
 
-    if(!(fp = fopen((char *)file, "rb"))) {
-        debug(DBG_WARN, "Cannot open script file '%s'\n", file);
-        return -2;
-    }
+    /* Is the script deleted? */
+    if(!deleted) {
+        if(!(fp = fopen((char *)file, "rb"))) {
+            debug(DBG_WARN, "Cannot open script file '%s'\n", file);
+            return -2;
+        }
 
-    /* Figure out how long it is */
-    fseek(fp, 0, SEEK_END);
-    len = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+        /* Figure out how long it is */
+        fseek(fp, 0, SEEK_END);
+        len = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
 
-    if(len > 32768) {
-        debug(DBG_WARN, "Script file '%s' is too long\n", file);
+        if(len > 32768) {
+            debug(DBG_WARN, "Script file '%s' is too long\n", file);
+            fclose(fp);
+            return -3;
+        }
+
+        if(!(tmp = malloc(len))) {
+            debug(DBG_ERROR, "Out of memory allocating script\n");
+            fclose(fp);
+            return -4;
+        }
+
+        if(fread(tmp, 1, len, fp) != len) {
+            debug(DBG_WARN, "Cannot read script '%s'\n", file);
+            free(tmp);
+            fclose(fp);
+            return -4;
+        }
+
         fclose(fp);
-        return -3;
-    }
 
-    if(!(tmp = malloc(len))) {
-        debug(DBG_ERROR, "Out of memory allocating script\n");
-        fclose(fp);
-        return -4;
-    }
-
-    if(fread(tmp, 1, len, fp) != len) {
-        debug(DBG_WARN, "Cannot read script '%s'\n", file);
+        crc = sylverant_crc32((const uint8_t *)tmp, len);
         free(tmp);
-        fclose(fp);
-        return -4;
     }
-
-    fclose(fp);
-
-    crc = sylverant_crc32((const uint8_t *)tmp, len);
-    free(tmp);
 
     scripts[script_count].local_fn = (char *)file;
     scripts[script_count].remote_fn = (char *)remote;
@@ -181,6 +184,7 @@ static int ship_script_add(xmlChar *file, xmlChar *remote, int mod,
     scripts[script_count].event = action;
     scripts[script_count].len = (uint32_t)len;
     scripts[script_count].crc = crc;
+    scripts[script_count].deleted = deleted;
     ++script_count;
 
     return 0;
@@ -191,11 +195,12 @@ int script_list_read(const char *fn) {
     xmlParserCtxtPtr cxt;
     xmlDoc *doc;
     xmlNode *n;
-    xmlChar *file, *event, *remote;
+    xmlChar *file, *event, *remote, *deleted;
     int rv = 0;
     script_action_t idx;
     int sidx;
     uint32_t num_alloc = 0;
+    int is_del = 0;
 
     /* If we're reloading, kill the old list. */
     if(scripts_ref) {
@@ -299,8 +304,23 @@ int script_list_read(const char *fn) {
             /* See if we have all <module> elements... */
             file = xmlGetProp(n, XC"file");
             remote = xmlGetProp(n, XC"remote_file");
+            deleted = xmlGetProp(n, XC"deleted");
 
-            if(!file || !remote) {
+            if(deleted) {
+                if(!xmlStrcmp(deleted, XC"true")) {
+                    is_del = 1;
+                }
+                else if(xmlStrcmp(deleted, XC"false")) {
+                    debug(DBG_WARN, "Ignoring unknown value for deleted (%s) "
+                          "on line %hu, assuming false\n", (char *)deleted,
+                          n->line);
+                }
+            }
+
+            /* We don't need this anymore... */
+            xmlFree(deleted);
+
+            if((!is_del && !file) || !remote) {
                 debug(DBG_WARN, "Incomplete module entry on line %hu\n",
                       n->line);
                 xmlFree(remote);
@@ -309,13 +329,19 @@ int script_list_read(const char *fn) {
             }
 
             /* Add it to the list. */
-            if(ship_script_add(file, remote, 1, 0, &num_alloc)) {
+            if(ship_script_add(file, remote, 1, 0, &num_alloc, is_del)) {
                 xmlFree(remote);
                 xmlFree(file);
             }
             else {
-                debug(DBG_LOG, "Added module '%s'\n",
-                      scripts[script_count - 1].local_fn);
+                if(!is_del) {
+                    debug(DBG_LOG, "Added module '%s'\n",
+                          scripts[script_count - 1].local_fn);
+                }
+                else {
+                    debug(DBG_LOG, "Added deleted module '%s'\n",
+                          scripts[script_count - 1].remote_fn);
+                }
             }
         }
         else if(!xmlStrcmp(n->name, XC"ship")) {
@@ -323,8 +349,23 @@ int script_list_read(const char *fn) {
             file = xmlGetProp(n, XC"file");
             remote = xmlGetProp(n, XC"remote_file");
             event = xmlGetProp(n, XC"event");
+            deleted = xmlGetProp(n, XC"deleted");
 
-            if(!file || !remote) {
+            if(deleted) {
+                if(!xmlStrcmp(deleted, XC"true")) {
+                    is_del = 1;
+                }
+                else if(xmlStrcmp(deleted, XC"false")) {
+                    debug(DBG_WARN, "Ignoring unknown value for deleted (%s) "
+                          "on line %hu, assuming false\n", (char *)deleted,
+                          n->line);
+                }
+            }
+
+            /* We don't need this anymore... */
+            xmlFree(deleted);
+
+            if((!is_del && !file) || !remote) {
                 debug(DBG_WARN, "Incomplete ship entry on line %hu\n",
                       n->line);
                 xmlFree(event);
@@ -354,13 +395,19 @@ int script_list_read(const char *fn) {
             xmlFree(event);
 
             /* Add it to the list. */
-            if(ship_script_add(file, remote, 0, sidx, &num_alloc)) {
+            if(ship_script_add(file, remote, 0, sidx, &num_alloc, is_del)) {
                 xmlFree(remote);
                 xmlFree(file);
             }
             else {
-                debug(DBG_LOG, "Added ship script '%s'\n",
-                      scripts[script_count - 1].local_fn);
+                if(!is_del) {
+                    debug(DBG_LOG, "Added ship script '%s'\n",
+                          scripts[script_count - 1].local_fn);
+                }
+                else {
+                    debug(DBG_LOG, "Added deleted ship script '%s'\n",
+                          scripts[script_count - 1].remote_fn);
+                }
             }
         }
 

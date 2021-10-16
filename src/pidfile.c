@@ -36,7 +36,6 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <libutil.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +50,7 @@ struct pidfh {
 };
 
 static int _pidfile_remove(struct pidfh *pfh, int freeit);
+int flopen(const char *path, int flags, ...);
 
 static int
 pidfile_verify(const struct pidfh *pfh)

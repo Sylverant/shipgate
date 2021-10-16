@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2011, 2016, 2018 Lawrence Sebald
+    Copyright (C) 2011, 2016, 2018, 2021 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -28,6 +28,7 @@ typedef struct ship_script {
     uint32_t crc;
     int module;
     int event;
+    int deleted;
 } ship_script_t;
 
 /* Scriptable actions on the shipgate */
