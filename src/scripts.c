@@ -1,6 +1,6 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2011, 2016, 2018, 2019, 2021 Lawrence Sebald
+    Copyright (C) 2011, 2016, 2018, 2019, 2021, 2022 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -77,6 +77,7 @@ static const xmlChar *ship_script_action_text[] = {
     XC"CHANGE_AREA",
     XC"QUEST_SYNCREG",
     XC"QUEST_LOAD",
+    XC"BEFORE_QUEST_LOAD",
     NULL
 };
 
