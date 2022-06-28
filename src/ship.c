@@ -3411,7 +3411,7 @@ static int handle_mkill(ship_t *c, shipgate_mkill_pkt *pkt) {
 /* Handle a token-based user login request. */
 static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     uint32_t gc, block;
-    char query[256];
+    char query[512];
     void *result;
     char **row;
     char esc[65], esc2[65];
@@ -3447,14 +3447,22 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     /* Escape the username and grab the data we need. */
     sylverant_db_escape_str(&conn, esc, pkt->username, strlen(pkt->username));
     sylverant_db_escape_str(&conn, esc2, pkt->password, strlen(pkt->password));
-    gc = ntohl(pkt->guildcard);
     block = ntohl(pkt->block);
+    gc = ntohl(pkt->guildcard);
 
     /* Build the query asking for the data. */
-    sprintf(query, "SELECT privlevel, account_id FROM account_data NATURAL "
-            "JOIN guildcards NATURAL JOIN login_tokens WHERE guildcard='%u' "
-            "AND username='%s' AND token='%s'",
-            gc, esc, esc2);
+    if(pkt->hdr.version == TLOGIN_VER_NORMAL) {
+        sprintf(query, "SELECT privlevel, account_id FROM account_data NATURAL "
+                "JOIN guildcards NATURAL JOIN login_tokens WHERE "
+                "guildcard='%u' AND username='%s' AND token='%s'",
+                gc, esc, esc2);
+    }
+    else {
+        sprintf(query, "SELECT privlevel, account_data.account_id FROM "
+                "account_data NATURAL NATURAL JOIN login_tokens, guildcards "
+                "WHERE username='%s' AND token='%s' AND guildcard='%u'"
+                "guildcard.account_id=NULL", esc, esc2, gc);
+    }
 
     if(sylverant_db_query(&conn, query)) {
         debug(DBG_WARN, "Couldn't lookup account data (user: %s, gc: %u)\n",
@@ -3510,8 +3518,23 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
                           (uint8_t *)&pkt->guildcard, 8);
     }
 
-    /* We're done if we got this far. */
+    /* We're done with the privileges and such if we got this far. */
     sylverant_db_result_free(result);
+
+    /* If this was a request to associate an XBL account, then do it. */
+    if(pkt->hdr.version == TLOGIN_VER_XBOX) {
+        sprintf(query, "UPDATE guildcards SET account_id='%u' WHERE "
+                "guildcard='%u' AND account_id=NULL", account_id, gc);
+
+        if(sylverant_db_query(&conn, query)) {
+            debug(DBG_WARN, "Couldn't update guild card data (user: %s, "
+                            "gc: %u)\n", pkt->username, gc);
+            debug(DBG_WARN, "%s\n", sylverant_db_error(&conn));
+
+            return send_error(c, SHDR_TYPE_USRLOGIN, SHDR_FAILURE,
+                              ERR_BAD_ERROR, (uint8_t *)&pkt->guildcard, 8);
+        }
+    }
 
     /* Delete the request. */
     sprintf(query, "DELETE FROM login_tokens WHERE account_id='%u'",
