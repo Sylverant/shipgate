@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
-    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018,
-                  2019, 2020, 2021 Lawrence Sebald
+    Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018, 2019,
+                  2020, 2021, 2022 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -1052,7 +1052,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply6.gc_search = pkt->gc_search;
         reply6.gc_target = pkt->gc_target;
         parse_ipv6(ip6_hi, ip6_lo, reply6.ip);
-        reply6.port = LE16((port + block * 5));
+        reply6.port = LE16((port + block * 6));
 
         reply6.menu_id = LE32(0xFFFFFFFF);
         reply6.item_id = LE32(dlobby_id);
@@ -1104,7 +1104,7 @@ static int handle_guild_search(ship_t *c, dc_guild_search_pkt *pkt,
         reply.gc_search = pkt->gc_search;
         reply.gc_target = pkt->gc_target;
         reply.ip = htonl(ip);
-        reply.port = LE16((port + block * 5));
+        reply.port = LE16((port + block * 6));
 
         reply.menu_id = LE32(0xFFFFFFFF);
         reply.item_id = LE32(dlobby_id);
@@ -1253,7 +1253,7 @@ static int handle_bb_guild_search(ship_t *c, shipgate_fw_9_pkt *pkt) {
     reply.gc_search = p->gc_search;
     reply.gc_target = p->gc_target;
     reply.ip = htonl(ip);
-    reply.port = LE16((port + block * 5 + 4));
+    reply.port = LE16((port + block * 6 + 4));
     reply.menu_id = LE32(0xFFFFFFFF);
     reply.item_id = LE32(dlobby_id);
 
