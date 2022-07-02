@@ -3459,9 +3459,10 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     }
     else {
         sprintf(query, "SELECT privlevel, account_data.account_id FROM "
-                "account_data NATURAL JOIN login_tokens, guildcards "
-                "WHERE username='%s' AND token='%s' AND guildcard='%u' AND "
-                "guildcards.account_id is NULL", esc, esc2, gc);
+                "account_data NATURAL JOIN login_tokens, guildcards NATURAL "
+                "JOIN xbox_clients WHERE username='%s' AND token='%s' AND "
+                "guildcard='%u' AND guildcards.account_id is NULL", esc, esc2,
+                gc);
     }
 
     if(sylverant_db_query(&conn, query)) {
@@ -3524,7 +3525,7 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
     /* If this was a request to associate an XBL account, then do it. */
     if(pkt->hdr.version == TLOGIN_VER_XBOX) {
         sprintf(query, "UPDATE guildcards SET account_id='%u' WHERE "
-                "guildcard='%u' AND account_id=NULL", account_id, gc);
+                "guildcard='%u' AND account_id is NULL", account_id, gc);
 
         if(sylverant_db_query(&conn, query)) {
             debug(DBG_WARN, "Couldn't update guild card data (user: %s, "
