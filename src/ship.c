@@ -3461,7 +3461,7 @@ static int handle_tlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
         sprintf(query, "SELECT privlevel, account_data.account_id FROM "
                 "account_data NATURAL JOIN login_tokens, guildcards "
                 "WHERE username='%s' AND token='%s' AND guildcard='%u' AND "
-                "guildcard.account_id=NULL", esc, esc2, gc);
+                "guildcards.account_id=NULL", esc, esc2, gc);
     }
 
     if(sylverant_db_query(&conn, query)) {
