@@ -1,7 +1,7 @@
 /*
     Sylverant Shipgate
     Copyright (C) 2009, 2010, 2011, 2012, 2014, 2015, 2016, 2017, 2018, 2019,
-                  2020, 2021, 2022 Lawrence Sebald
+                  2020, 2021, 2022, 2023 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 
 #include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
 #include <gnutls/x509.h>
 
 #include <zlib.h>
@@ -34,7 +35,6 @@
 #include <sylverant/debug.h>
 #include <sylverant/database.h>
 #include <sylverant/mtwist.h>
-#include <sylverant/md5.h>
 
 #ifdef ENABLE_LUA
 #include <lua.h>
@@ -2047,7 +2047,7 @@ static int handle_usrlogin(ship_t *c, shipgate_usrlogin_req_pkt *pkt) {
 
     /* Check the password. */
     sprintf(query, "%s_%s_salt", pkt->password, row[1]);
-    md5((unsigned char *)query, strlen(query), hash);
+    gnutls_hash_fast(GNUTLS_DIG_MD5, query, strlen(query), hash);
 
     query[0] = '\0';
     for(i = 0; i < 16; ++i) {
